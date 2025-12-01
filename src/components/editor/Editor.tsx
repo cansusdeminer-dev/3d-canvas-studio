@@ -6,6 +6,8 @@ import { PropertiesPanel } from './PropertiesPanel';
 import { StatusBar } from './StatusBar';
 import { DropZone } from './DropZone';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { TexturePainterOverlay } from './TexturePainter';
+import { UVEditor } from './UVEditor';
 
 export function Editor() {
   return (
@@ -22,15 +24,15 @@ export function Editor() {
             <DropZone>
               <div className="flex-1 relative">
                 <Viewport />
+                <TexturePainterOverlay />
+                <UVEditor />
                 
-                {/* Viewport info overlay */}
                 <div className="absolute top-3 left-3 flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
                   <span className="px-2 py-1 bg-panel/80 backdrop-blur-sm rounded border border-border">
                     Perspective
                   </span>
                 </div>
                 
-                {/* Coordinates display */}
                 <div className="absolute bottom-3 left-3 flex items-center gap-3 text-[10px] font-mono">
                   <span className="px-2 py-1 bg-panel/80 backdrop-blur-sm rounded border border-border">
                     <span className="text-gizmo-x">X: 0.00</span>

@@ -2,13 +2,21 @@ import * as THREE from 'three';
 
 export type TransformMode = 'translate' | 'rotate' | 'scale' | 'select';
 
+export type GeometryType = 'box' | 'sphere' | 'cylinder' | 'cone' | 'torus' | 'plane' | 'imported';
+
 export interface Object3DData {
   id: string;
   name: string;
   type: 'mesh' | 'light' | 'camera' | 'group';
+  geometryType: GeometryType;
   visible: boolean;
   locked: boolean;
   object?: THREE.Object3D;
+  modelUrl?: string;
+  position?: [number, number, number];
+  rotation?: [number, number, number];
+  scale?: [number, number, number];
+  color?: string;
 }
 
 export interface LightData {
@@ -21,6 +29,13 @@ export interface LightData {
   castShadow?: boolean;
 }
 
+export interface BrushSettings {
+  size: number;
+  color: string;
+  opacity: number;
+  hardness: number;
+}
+
 export interface EditorState {
   selectedObjectId: string | null;
   transformMode: TransformMode;
@@ -30,6 +45,9 @@ export interface EditorState {
   showStats: boolean;
   snapEnabled: boolean;
   snapValue: number;
+  paintMode: boolean;
+  brushSettings: BrushSettings;
+  showUVEditor: boolean;
 }
 
 export interface ViewportSettings {
@@ -39,6 +57,13 @@ export interface ViewportSettings {
   cameraPosition: [number, number, number];
   cameraTarget: [number, number, number];
 }
+
+export const defaultBrushSettings: BrushSettings = {
+  size: 20,
+  color: '#ff0000',
+  opacity: 1,
+  hardness: 0.8,
+};
 
 export const defaultEditorState: EditorState = {
   selectedObjectId: null,
@@ -66,6 +91,9 @@ export const defaultEditorState: EditorState = {
   showStats: false,
   snapEnabled: false,
   snapValue: 1,
+  paintMode: false,
+  brushSettings: defaultBrushSettings,
+  showUVEditor: false,
 };
 
 export const defaultViewportSettings: ViewportSettings = {
