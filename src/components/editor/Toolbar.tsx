@@ -4,16 +4,18 @@ import {
   RotateCcw, 
   Maximize2, 
   Grid3X3, 
-  Box, 
   Lightbulb,
   Undo2,
   Redo2,
   Save,
   Download,
-  Magnet
+  Magnet,
+  Paintbrush,
+  Layout
 } from 'lucide-react';
 import { useEditorStore } from '@/hooks/useEditorStore';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { PrimitivesMenu } from './PrimitivesMenu';
 import { cn } from '@/lib/utils';
 
 interface ToolButtonProps {
@@ -62,19 +64,11 @@ export function Toolbar() {
     toggleGrid,
     snapEnabled,
     toggleSnap,
-    addObject
+    paintMode,
+    togglePaintMode,
+    showUVEditor,
+    toggleUVEditor
   } = useEditorStore();
-
-  const handleAddCube = () => {
-    const id = `cube-${Date.now()}`;
-    addObject({
-      id,
-      name: `Cube ${Date.now().toString().slice(-4)}`,
-      type: 'mesh',
-      visible: true,
-      locked: false,
-    });
-  };
 
   return (
     <div className="panel flex flex-col items-center py-2 px-1.5 gap-0.5 w-12">
@@ -109,16 +103,28 @@ export function Toolbar() {
       
       <Divider />
       
-      <ToolButton
-        icon={<Box size={18} />}
-        label="Add Cube"
-        shortcut="Shift+A"
-        onClick={handleAddCube}
-      />
+      <PrimitivesMenu />
       <ToolButton
         icon={<Lightbulb size={18} />}
         label="Add Light"
         onClick={() => {}}
+      />
+      
+      <Divider />
+      
+      <ToolButton
+        icon={<Paintbrush size={18} />}
+        label="Paint Mode"
+        shortcut="P"
+        active={paintMode}
+        onClick={togglePaintMode}
+      />
+      <ToolButton
+        icon={<Layout size={18} />}
+        label="UV Editor"
+        shortcut="U"
+        active={showUVEditor}
+        onClick={toggleUVEditor}
       />
       
       <Divider />

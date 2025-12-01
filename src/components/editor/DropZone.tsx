@@ -1,8 +1,7 @@
 import { useState, useCallback } from 'react';
-import { Upload, FileBox } from 'lucide-react';
+import { FileBox } from 'lucide-react';
 import { useEditorStore } from '@/hooks/useEditorStore';
 import { toast } from 'sonner';
-import { cn } from '@/lib/utils';
 
 interface DropZoneProps {
   children: React.ReactNode;
@@ -29,26 +28,31 @@ export function DropZone({ children }: DropZoneProps) {
     const files = Array.from(e.dataTransfer.files);
     const modelFiles = files.filter(file => 
       file.name.endsWith('.glb') || 
-      file.name.endsWith('.gltf') ||
-      file.name.endsWith('.obj') ||
-      file.name.endsWith('.fbx')
+      file.name.endsWith('.gltf')
     );
 
     if (modelFiles.length === 0) {
-      toast.error('Please drop a valid 3D model file (.glb, .gltf, .obj, .fbx)');
+      toast.error('Please drop a valid 3D model file (.glb, .gltf)');
       return;
     }
 
     modelFiles.forEach(file => {
-      const id = `model-${Date.now()}`;
+      const id = `model-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       const name = file.name.replace(/\.[^/.]+$/, '');
+      
+      const url = URL.createObjectURL(file);
       
       addObject({
         id,
         name,
         type: 'mesh',
+        geometryType: 'imported',
         visible: true,
         locked: false,
+        modelUrl: url,
+        position: [0, 0, 0],
+        rotation: [0, 0, 0],
+        scale: [1, 1, 1],
       });
       
       toast.success(`Imported: ${name}`);
@@ -73,7 +77,7 @@ export function DropZone({ children }: DropZoneProps) {
             <div className="text-center">
               <p className="text-lg font-medium">Drop 3D Model</p>
               <p className="text-sm text-muted-foreground">
-                Supports .glb, .gltf, .obj, .fbx
+                Supports .glb, .gltf
               </p>
             </div>
           </div>

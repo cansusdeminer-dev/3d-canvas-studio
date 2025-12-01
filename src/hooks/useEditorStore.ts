@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { EditorState, TransformMode, Object3DData, LightData, defaultEditorState } from '@/types/editor';
+import { EditorState, TransformMode, Object3DData, LightData, BrushSettings, defaultEditorState } from '@/types/editor';
 
 interface EditorStore extends EditorState {
   setSelectedObjectId: (id: string | null) => void;
@@ -16,6 +16,9 @@ interface EditorStore extends EditorState {
   toggleStats: () => void;
   toggleSnap: () => void;
   setSnapValue: (value: number) => void;
+  togglePaintMode: () => void;
+  updateBrushSettings: (settings: Partial<BrushSettings>) => void;
+  toggleUVEditor: () => void;
   reset: () => void;
 }
 
@@ -74,6 +77,14 @@ export const useEditorStore = create<EditorStore>((set) => ({
   toggleSnap: () => set((state) => ({ snapEnabled: !state.snapEnabled })),
   
   setSnapValue: (value) => set({ snapValue: value }),
+  
+  togglePaintMode: () => set((state) => ({ paintMode: !state.paintMode })),
+  
+  updateBrushSettings: (settings) => set((state) => ({
+    brushSettings: { ...state.brushSettings, ...settings },
+  })),
+  
+  toggleUVEditor: () => set((state) => ({ showUVEditor: !state.showUVEditor })),
   
   reset: () => set(defaultEditorState),
 }));

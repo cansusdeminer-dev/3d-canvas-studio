@@ -143,8 +143,13 @@ export function LayersPanel() {
       id,
       name: `Cube ${Date.now().toString().slice(-4)}`,
       type: 'mesh',
+      geometryType: 'box',
       visible: true,
       locked: false,
+      position: [0, 0, 0],
+      rotation: [0, 0, 0],
+      scale: [1, 1, 1],
+      color: '#6b7280',
     });
   };
 
