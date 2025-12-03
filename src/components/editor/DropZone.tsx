@@ -61,7 +61,7 @@ export function DropZone({ children }: DropZoneProps) {
 
   return (
     <div
-      className="relative w-full h-full"
+      className="flex-1 relative min-h-0 h-full"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}

@@ -1,10 +1,70 @@
 import { useEditorStore } from '@/hooks/useEditorStore';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Slider } from '@/components/ui/slider';
-import { Box, Move, RotateCcw, Maximize2 } from 'lucide-react';
+import { Box, Move, RotateCcw, Maximize2, Palette, ChevronDown, ChevronRight } from 'lucide-react';
+import { MaterialEditor } from './MaterialEditor';
+import { useState } from 'react';
+import { cn } from '@/lib/utils';
+
+function CollapsibleSection({ 
+  title, 
+  icon: Icon, 
+  children, 
+  defaultOpen = true 
+}: { 
+  title: string; 
+  icon: React.ElementType; 
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  
+  return (
+    <div className="border-b border-border">
+      <button 
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full panel-header flex items-center gap-2 hover:bg-hover transition-colors"
+      >
+        {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        <Icon size={12} />
+        <span>{title}</span>
+      </button>
+      <div className={cn("overflow-hidden transition-all", isOpen ? "max-h-[500px]" : "max-h-0")}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 function TransformSection() {
+  const { selectedObjectId, objects, updateObject } = useEditorStore();
+  const selectedObject = objects.find(obj => obj.id === selectedObjectId);
+  
+  const position = selectedObject?.position || [0, 0, 0];
+  const rotation = selectedObject?.rotation || [0, 0, 0];
+  const scale = selectedObject?.scale || [1, 1, 1];
+
+  const handlePositionChange = (axis: number, value: string) => {
+    if (!selectedObjectId) return;
+    const newPos = [...position] as [number, number, number];
+    newPos[axis] = parseFloat(value) || 0;
+    updateObject(selectedObjectId, { position: newPos });
+  };
+
+  const handleRotationChange = (axis: number, value: string) => {
+    if (!selectedObjectId) return;
+    const newRot = [...rotation] as [number, number, number];
+    newRot[axis] = parseFloat(value) || 0;
+    updateObject(selectedObjectId, { rotation: newRot });
+  };
+
+  const handleScaleChange = (axis: number, value: string) => {
+    if (!selectedObjectId) return;
+    const newScale = [...scale] as [number, number, number];
+    newScale[axis] = parseFloat(value) || 1;
+    updateObject(selectedObjectId, { scale: newScale });
+  };
+
   return (
     <div className="p-3 space-y-4">
       <div className="space-y-2">
@@ -13,63 +73,39 @@ function TransformSection() {
           <span>Position</span>
         </div>
         <div className="grid grid-cols-3 gap-2">
-          <div>
-            <Label className="text-[10px] text-gizmo-x">X</Label>
-            <Input 
-              type="number" 
-              defaultValue="0" 
-              className="h-7 text-xs input-field"
-            />
-          </div>
-          <div>
-            <Label className="text-[10px] text-gizmo-y">Y</Label>
-            <Input 
-              type="number" 
-              defaultValue="0" 
-              className="h-7 text-xs input-field"
-            />
-          </div>
-          <div>
-            <Label className="text-[10px] text-gizmo-z">Z</Label>
-            <Input 
-              type="number" 
-              defaultValue="0" 
-              className="h-7 text-xs input-field"
-            />
-          </div>
+          {['X', 'Y', 'Z'].map((axis, i) => (
+            <div key={axis}>
+              <Label className={`text-[10px] text-gizmo-${axis.toLowerCase()}`}>{axis}</Label>
+              <Input 
+                type="number" 
+                value={position[i].toFixed(2)}
+                onChange={(e) => handlePositionChange(i, e.target.value)}
+                step={0.1}
+                className="h-7 text-xs input-field"
+              />
+            </div>
+          ))}
         </div>
       </div>
       
       <div className="space-y-2">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <RotateCcw size={12} />
-          <span>Rotation</span>
+          <span>Rotation (deg)</span>
         </div>
         <div className="grid grid-cols-3 gap-2">
-          <div>
-            <Label className="text-[10px] text-gizmo-x">X</Label>
-            <Input 
-              type="number" 
-              defaultValue="0" 
-              className="h-7 text-xs input-field"
-            />
-          </div>
-          <div>
-            <Label className="text-[10px] text-gizmo-y">Y</Label>
-            <Input 
-              type="number" 
-              defaultValue="0" 
-              className="h-7 text-xs input-field"
-            />
-          </div>
-          <div>
-            <Label className="text-[10px] text-gizmo-z">Z</Label>
-            <Input 
-              type="number" 
-              defaultValue="0" 
-              className="h-7 text-xs input-field"
-            />
-          </div>
+          {['X', 'Y', 'Z'].map((axis, i) => (
+            <div key={axis}>
+              <Label className={`text-[10px] text-gizmo-${axis.toLowerCase()}`}>{axis}</Label>
+              <Input 
+                type="number" 
+                value={(rotation[i] * (180 / Math.PI)).toFixed(1)}
+                onChange={(e) => handleRotationChange(i, String((parseFloat(e.target.value) || 0) * (Math.PI / 180)))}
+                step={5}
+                className="h-7 text-xs input-field"
+              />
+            </div>
+          ))}
         </div>
       </div>
       
@@ -79,62 +115,19 @@ function TransformSection() {
           <span>Scale</span>
         </div>
         <div className="grid grid-cols-3 gap-2">
-          <div>
-            <Label className="text-[10px] text-gizmo-x">X</Label>
-            <Input 
-              type="number" 
-              defaultValue="1" 
-              className="h-7 text-xs input-field"
-            />
-          </div>
-          <div>
-            <Label className="text-[10px] text-gizmo-y">Y</Label>
-            <Input 
-              type="number" 
-              defaultValue="1" 
-              className="h-7 text-xs input-field"
-            />
-          </div>
-          <div>
-            <Label className="text-[10px] text-gizmo-z">Z</Label>
-            <Input 
-              type="number" 
-              defaultValue="1" 
-              className="h-7 text-xs input-field"
-            />
-          </div>
+          {['X', 'Y', 'Z'].map((axis, i) => (
+            <div key={axis}>
+              <Label className={`text-[10px] text-gizmo-${axis.toLowerCase()}`}>{axis}</Label>
+              <Input 
+                type="number" 
+                value={scale[i].toFixed(2)}
+                onChange={(e) => handleScaleChange(i, e.target.value)}
+                step={0.1}
+                className="h-7 text-xs input-field"
+              />
+            </div>
+          ))}
         </div>
-      </div>
-    </div>
-  );
-}
-
-function MaterialSection() {
-  return (
-    <div className="p-3 space-y-3">
-      <div className="space-y-2">
-        <Label className="text-xs">Color</Label>
-        <div className="flex gap-2">
-          <input 
-            type="color" 
-            defaultValue="#6b7280" 
-            className="w-8 h-8 rounded border border-border cursor-pointer"
-          />
-          <Input 
-            defaultValue="#6b7280" 
-            className="h-8 text-xs input-field font-mono"
-          />
-        </div>
-      </div>
-      
-      <div className="space-y-2">
-        <Label className="text-xs">Metalness</Label>
-        <Slider defaultValue={[0.3]} max={1} step={0.01} className="py-2" />
-      </div>
-      
-      <div className="space-y-2">
-        <Label className="text-xs">Roughness</Label>
-        <Slider defaultValue={[0.7]} max={1} step={0.01} className="py-2" />
       </div>
     </div>
   );
@@ -145,7 +138,7 @@ export function PropertiesPanel() {
   const selectedObject = objects.find(obj => obj.id === selectedObjectId);
 
   return (
-    <div className="panel w-64 flex flex-col h-full overflow-hidden">
+    <div className="panel w-72 flex flex-col h-full overflow-hidden">
       <div className="panel-header border-b border-border">
         Properties
       </div>
@@ -155,17 +148,16 @@ export function PropertiesPanel() {
           <div className="panel-header flex items-center gap-2 border-b border-border">
             <Box size={12} className="text-primary" />
             <span className="text-xs font-medium text-foreground">{selectedObject.name}</span>
+            <span className="text-[10px] text-muted-foreground ml-auto">{selectedObject.geometryType}</span>
           </div>
           
-          <div className="border-b border-border">
-            <div className="panel-header">Transform</div>
+          <CollapsibleSection title="Transform" icon={Move}>
             <TransformSection />
-          </div>
+          </CollapsibleSection>
           
-          <div className="border-b border-border">
-            <div className="panel-header">Material</div>
-            <MaterialSection />
-          </div>
+          <CollapsibleSection title="Material" icon={Palette}>
+            <MaterialEditor />
+          </CollapsibleSection>
         </div>
       ) : (
         <div className="flex-1 flex items-center justify-center">
