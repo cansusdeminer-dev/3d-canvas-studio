@@ -4,7 +4,8 @@ import {
   HelpCircle, 
   Maximize,
   Play,
-  GitBranch
+  GitBranch,
+  Workflow
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -18,9 +19,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 
 interface HeaderProps {
   onShowArchitecture?: () => void;
+  onShowSDFGraph?: () => void;
 }
 
-export function Header({ onShowArchitecture }: HeaderProps) {
+export function Header({ onShowArchitecture, onShowSDFGraph }: HeaderProps) {
   return (
     <header className="h-10 bg-toolbar border-b border-border flex items-center justify-between px-2">
       <div className="flex items-center gap-2">
@@ -37,6 +39,10 @@ export function Header({ onShowArchitecture }: HeaderProps) {
             <DropdownMenuItem>Import Model...</DropdownMenuItem>
             <DropdownMenuItem>Export Scene...</DropdownMenuItem>
             <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onShowSDFGraph}>
+              <Workflow size={14} className="mr-2" />
+              SDF Node Graph
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={onShowArchitecture}>
               <GitBranch size={14} className="mr-2" />
               View Architecture
@@ -57,6 +63,16 @@ export function Header({ onShowArchitecture }: HeaderProps) {
       </div>
       
       <div className="flex items-center gap-1">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="ghost" size="sm" className="h-7 px-2 gap-1.5 text-xs" onClick={onShowSDFGraph}>
+              <Workflow size={14} className="text-amber-400" />
+              SDF Graph
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Open SDF Node Graph Editor</TooltipContent>
+        </Tooltip>
+        
         <Button variant="ghost" size="sm" className="h-7 px-2 gap-1.5 text-xs">
           <Play size={14} className="text-green-400" />
           Preview

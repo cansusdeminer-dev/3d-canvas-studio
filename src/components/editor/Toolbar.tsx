@@ -11,11 +11,13 @@ import {
   Download,
   Magnet,
   Paintbrush,
-  Layout
+  Layout,
+  Workflow
 } from 'lucide-react';
 import { useEditorStore } from '@/hooks/useEditorStore';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { PrimitivesMenu } from './PrimitivesMenu';
+import { CSGOperations } from './CSGOperations';
 import { cn } from '@/lib/utils';
 
 interface ToolButtonProps {
@@ -56,7 +58,11 @@ function Divider() {
   return <div className="w-full h-px bg-border my-1" />;
 }
 
-export function Toolbar() {
+interface ToolbarProps {
+  onOpenSDFGraph?: () => void;
+}
+
+export function Toolbar({ onOpenSDFGraph }: ToolbarProps) {
   const { 
     transformMode, 
     setTransformMode, 
@@ -108,6 +114,16 @@ export function Toolbar() {
         icon={<Lightbulb size={18} />}
         label="Add Light"
         onClick={() => {}}
+      />
+      
+      <Divider />
+      
+      <CSGOperations />
+      <ToolButton
+        icon={<Workflow size={18} />}
+        label="SDF Node Graph"
+        shortcut="N"
+        onClick={onOpenSDFGraph}
       />
       
       <Divider />
