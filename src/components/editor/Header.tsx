@@ -4,7 +4,7 @@ import {
   HelpCircle, 
   Maximize,
   Play,
-  Pause
+  GitBranch
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -14,8 +14,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
-export function Header() {
+interface HeaderProps {
+  onShowArchitecture?: () => void;
+}
+
+export function Header({ onShowArchitecture }: HeaderProps) {
   return (
     <header className="h-10 bg-toolbar border-b border-border flex items-center justify-between px-2">
       <div className="flex items-center gap-2">
@@ -31,6 +36,11 @@ export function Header() {
             <DropdownMenuSeparator />
             <DropdownMenuItem>Import Model...</DropdownMenuItem>
             <DropdownMenuItem>Export Scene...</DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onShowArchitecture}>
+              <GitBranch size={14} className="mr-2" />
+              View Architecture
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem>Settings</DropdownMenuItem>
           </DropdownMenuContent>
@@ -54,6 +64,14 @@ export function Header() {
         
         <div className="h-4 w-px bg-border mx-1" />
         
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onShowArchitecture}>
+              <GitBranch size={14} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>CSG-SDF Architecture</TooltipContent>
+        </Tooltip>
         <Button variant="ghost" size="icon" className="h-7 w-7">
           <HelpCircle size={14} />
         </Button>

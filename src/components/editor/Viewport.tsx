@@ -102,7 +102,7 @@ function LoadingFallback() {
 
 export function Viewport() {
   return (
-    <div className="canvas-container w-full h-full">
+    <div className="canvas-container absolute inset-0">
       <Canvas
         shadows
         gl={{ 
@@ -113,6 +113,7 @@ export function Viewport() {
         onCreated={({ gl }) => {
           gl.setClearColor('#0d1117');
         }}
+        style={{ width: '100%', height: '100%' }}
       >
         <Suspense fallback={<LoadingFallback />}>
           <Scene />

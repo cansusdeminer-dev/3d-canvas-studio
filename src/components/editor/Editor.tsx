@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Header } from './Header';
 import { Toolbar } from './Toolbar';
 import { Viewport } from './Viewport';
@@ -8,21 +9,24 @@ import { DropZone } from './DropZone';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { TexturePainterOverlay } from './TexturePainter';
 import { UVEditor } from './UVEditor';
+import { ArchitectureDiagram } from './ArchitectureDiagram';
 
 export function Editor() {
+  const [showArchitecture, setShowArchitecture] = useState(false);
+
   return (
     <TooltipProvider delayDuration={200}>
       <div className="h-screen w-screen flex flex-col bg-background overflow-hidden">
-        <Header />
+        <Header onShowArchitecture={() => setShowArchitecture(true)} />
         
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex min-h-0 overflow-hidden">
           <Toolbar />
           
-          <div className="flex-1 flex overflow-hidden">
+          <div className="flex-1 flex min-h-0 overflow-hidden">
             <LayersPanel />
             
             <DropZone>
-              <div className="flex-1 relative">
+              <div className="flex-1 h-full relative min-h-0">
                 <Viewport />
                 <TexturePainterOverlay />
                 <UVEditor />
@@ -52,6 +56,11 @@ export function Editor() {
         </div>
         
         <StatusBar />
+        
+        <ArchitectureDiagram 
+          isOpen={showArchitecture} 
+          onClose={() => setShowArchitecture(false)} 
+        />
       </div>
     </TooltipProvider>
   );
