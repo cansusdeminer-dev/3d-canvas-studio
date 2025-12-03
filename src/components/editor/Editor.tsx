@@ -10,17 +10,22 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { TexturePainterOverlay } from './TexturePainter';
 import { UVEditor } from './UVEditor';
 import { ArchitectureDiagram } from './ArchitectureDiagram';
+import { SDFDrawer } from './SDFDrawer';
 
 export function Editor() {
   const [showArchitecture, setShowArchitecture] = useState(false);
+  const [showSDFGraph, setShowSDFGraph] = useState(false);
 
   return (
     <TooltipProvider delayDuration={200}>
       <div className="h-screen w-screen flex flex-col bg-background overflow-hidden">
-        <Header onShowArchitecture={() => setShowArchitecture(true)} />
+        <Header 
+          onShowArchitecture={() => setShowArchitecture(true)} 
+          onShowSDFGraph={() => setShowSDFGraph(true)}
+        />
         
         <div className="flex-1 flex min-h-0 overflow-hidden">
-          <Toolbar />
+          <Toolbar onOpenSDFGraph={() => setShowSDFGraph(true)} />
           
           <div className="flex-1 flex min-h-0 overflow-hidden">
             <LayersPanel />
@@ -60,6 +65,11 @@ export function Editor() {
         <ArchitectureDiagram 
           isOpen={showArchitecture} 
           onClose={() => setShowArchitecture(false)} 
+        />
+        
+        <SDFDrawer 
+          open={showSDFGraph} 
+          onOpenChange={setShowSDFGraph} 
         />
       </div>
     </TooltipProvider>
