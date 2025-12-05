@@ -1,5 +1,5 @@
-import { Suspense, useRef, useCallback } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Suspense, useRef, useCallback, useEffect } from 'react';
+import { Canvas, useThree } from '@react-three/fiber';
 import { 
   OrbitControls, 
   Grid, 
@@ -13,6 +13,9 @@ import {
 import { useEditorStore } from '@/hooks/useEditorStore';
 import { SceneObjects } from './SceneObjects';
 import { SceneLights } from './SceneLights';
+import { Cursor3D } from './Cursor3D';
+import { CursorControls } from './CursorControls';
+import { SculptBrush } from './SculptBrush';
 import * as THREE from 'three';
 
 function Scene() {
@@ -36,7 +39,14 @@ function Scene() {
         dampingFactor={0.05}
         minDistance={1}
         maxDistance={100}
+        enableZoom={false}
+        mouseButtons={{
+          LEFT: THREE.MOUSE.ROTATE,
+          MIDDLE: THREE.MOUSE.DOLLY,
+          RIGHT: THREE.MOUSE.PAN
+        }}
       />
+      <RightClickZoom orbitRef={orbitRef} />
       
       <SceneLights />
       
@@ -66,6 +76,11 @@ function Scene() {
       
       <SceneObjects onMissed={handleMissed} />
       
+      {/* 3D Cursor System */}
+      <Cursor3D />
+      <CursorControls />
+      <SculptBrush />
+      
       {selectedObject && transformMode !== 'select' && (
         <TransformControls
           object={selectedObject}
@@ -89,6 +104,44 @@ function Scene() {
       <Environment preset="city" background={false} />
     </>
   );
+}
+
+// Right-click + scroll for zoom
+function RightClickZoom({ orbitRef }: { orbitRef: React.RefObject<any> }) {
+  const { gl, camera } = useThree();
+  const isRightPressed = useRef(false);
+
+  useEffect(() => {
+    const handleMouseDown = (e: MouseEvent) => {
+      if (e.button === 2) isRightPressed.current = true;
+    };
+    
+    const handleMouseUp = (e: MouseEvent) => {
+      if (e.button === 2) isRightPressed.current = false;
+    };
+
+    const handleWheel = (e: WheelEvent) => {
+      if (isRightPressed.current) {
+        e.preventDefault();
+        const zoomSpeed = 0.1;
+        const direction = camera.getWorldDirection(new THREE.Vector3());
+        const distance = e.deltaY > 0 ? -zoomSpeed : zoomSpeed;
+        camera.position.addScaledVector(direction, distance * 5);
+      }
+    };
+
+    gl.domElement.addEventListener('mousedown', handleMouseDown);
+    gl.domElement.addEventListener('mouseup', handleMouseUp);
+    gl.domElement.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      gl.domElement.removeEventListener('mousedown', handleMouseDown);
+      gl.domElement.removeEventListener('mouseup', handleMouseUp);
+      gl.domElement.removeEventListener('wheel', handleWheel);
+    };
+  }, [gl, camera]);
+
+  return null;
 }
 
 function LoadingFallback() {
