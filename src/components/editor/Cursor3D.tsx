@@ -4,6 +4,11 @@ import { Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { useCursor3DStore } from '@/hooks/useCursor3DStore';
 
+// Smoothing configuration
+const POSITION_LERP = 0.15; // Position interpolation speed
+const NORMAL_LERP = 0.1;    // Normal interpolation speed (slower for stability)
+const MIN_SURFACE_TIME = 0.1; // Minimum time on surface before confirming
+
 export function Cursor3D() {
   const groupRef = useRef<THREE.Group>(null);
   const ringRef = useRef<THREE.Mesh>(null);
@@ -17,6 +22,16 @@ export function Cursor3D() {
   const mouse = useRef(new THREE.Vector2());
   const planeHelper = useRef(new THREE.Plane());
   const intersectionPoint = useRef(new THREE.Vector3());
+  
+  // Smoothing state
+  const smoothedPosition = useRef(new THREE.Vector3());
+  const smoothedNormal = useRef(new THREE.Vector3(0, 1, 0));
+  const smoothedQuaternion = useRef(new THREE.Quaternion());
+  const targetQuaternion = useRef(new THREE.Quaternion());
+  const surfaceTimer = useRef(0);
+  const lastValidNormal = useRef(new THREE.Vector3(0, 1, 0));
+  const lastValidPosition = useRef(new THREE.Vector3());
+  const isInitialized = useRef(false);
 
   // Get plane normal based on current plane setting
   const planeNormal = useMemo(() => {
@@ -47,10 +62,14 @@ export function Cursor3D() {
     return () => gl.domElement.removeEventListener('mousemove', handleMouseMove);
   }, [gl]);
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     if (!groupRef.current || !visible) return;
 
     raycaster.setFromCamera(mouse.current, camera);
+
+    let targetPosition = new THREE.Vector3();
+    let targetNormal = new THREE.Vector3(0, 1, 0);
+    let hitSurface = false;
 
     if (magneticMode) {
       // Magnetic mode - snap to object surfaces
@@ -72,38 +91,70 @@ export function Cursor3D() {
           worldNormal.transformDirection(hit.object.matrixWorld);
         }
 
-        setPosition(hit.point);
-        setNormal(worldNormal);
-        setIsOnSurface(true);
-
-        // Align cursor to surface normal with magnetic angle rotation
-        const up = new THREE.Vector3(0, 1, 0);
-        const quaternion = new THREE.Quaternion();
-        quaternion.setFromUnitVectors(up, worldNormal);
+        targetPosition.copy(hit.point);
+        targetNormal.copy(worldNormal);
+        hitSurface = true;
         
-        // Apply magnetic angle rotation around the normal
-        const angleQuat = new THREE.Quaternion();
-        angleQuat.setFromAxisAngle(worldNormal, magneticAngle);
-        quaternion.multiply(angleQuat);
+        // Track time on surface for stability
+        surfaceTimer.current += delta;
         
-        groupRef.current.quaternion.copy(quaternion);
-        groupRef.current.position.copy(hit.point);
-        
-        const euler = new THREE.Euler().setFromQuaternion(quaternion);
-        setRotation(euler);
+        // Only update last valid if we've been on surface long enough
+        if (surfaceTimer.current > MIN_SURFACE_TIME) {
+          lastValidNormal.current.copy(worldNormal);
+          lastValidPosition.current.copy(hit.point);
+        }
       } else {
-        setIsOnSurface(false);
-        // Fall back to plane mode
+        // Lost surface - use last valid or fall back to plane
+        surfaceTimer.current = 0;
+        
+        if (lastValidNormal.current.lengthSq() > 0) {
+          // Keep last valid orientation but move along plane
+          targetNormal.copy(lastValidNormal.current);
+        }
+        
+        // Fall back to plane mode positioning
         planeHelper.current.setFromNormalAndCoplanarPoint(planeNormal, new THREE.Vector3(0, height, 0));
         if (raycaster.ray.intersectPlane(planeHelper.current, intersectionPoint.current)) {
-          setPosition(intersectionPoint.current);
-          groupRef.current.position.copy(intersectionPoint.current);
-          groupRef.current.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), planeNormal);
+          targetPosition.copy(intersectionPoint.current);
         }
       }
+
+      // Smooth interpolation for position
+      if (!isInitialized.current) {
+        smoothedPosition.current.copy(targetPosition);
+        smoothedNormal.current.copy(targetNormal);
+        isInitialized.current = true;
+      } else {
+        smoothedPosition.current.lerp(targetPosition, POSITION_LERP);
+        smoothedNormal.current.lerp(targetNormal, NORMAL_LERP).normalize();
+      }
+
+      setPosition(smoothedPosition.current);
+      setNormal(smoothedNormal.current);
+      setIsOnSurface(hitSurface && surfaceTimer.current > MIN_SURFACE_TIME);
+
+      // Calculate target quaternion
+      const up = new THREE.Vector3(0, 1, 0);
+      targetQuaternion.current.setFromUnitVectors(up, smoothedNormal.current);
+      
+      // Apply magnetic angle rotation around the normal
+      const angleQuat = new THREE.Quaternion();
+      angleQuat.setFromAxisAngle(smoothedNormal.current, magneticAngle);
+      targetQuaternion.current.multiply(angleQuat);
+      
+      // Smooth quaternion interpolation
+      smoothedQuaternion.current.slerp(targetQuaternion.current, NORMAL_LERP);
+      
+      groupRef.current.quaternion.copy(smoothedQuaternion.current);
+      groupRef.current.position.copy(smoothedPosition.current);
+      
+      const euler = new THREE.Euler().setFromQuaternion(smoothedQuaternion.current);
+      setRotation(euler);
     } else {
       // Plane-constrained mode
       setIsOnSurface(false);
+      surfaceTimer.current = 0;
+      
       const planePoint = new THREE.Vector3();
       
       switch (plane) {
@@ -121,25 +172,32 @@ export function Cursor3D() {
       planeHelper.current.setFromNormalAndCoplanarPoint(planeNormal, planePoint);
       
       if (raycaster.ray.intersectPlane(planeHelper.current, intersectionPoint.current)) {
-        setPosition(intersectionPoint.current);
-        groupRef.current.position.copy(intersectionPoint.current);
+        targetPosition.copy(intersectionPoint.current);
+        
+        // Smooth position in plane mode too
+        if (!isInitialized.current) {
+          smoothedPosition.current.copy(targetPosition);
+          isInitialized.current = true;
+        } else {
+          smoothedPosition.current.lerp(targetPosition, POSITION_LERP * 2); // Faster in plane mode
+        }
+        
+        setPosition(smoothedPosition.current);
+        groupRef.current.position.copy(smoothedPosition.current);
         groupRef.current.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), planeNormal);
       }
     }
 
-    // Pulse animation for ring
+    // Static scale for ring (no breathing animation)
     if (ringRef.current) {
-      const scale = 1 + Math.sin(Date.now() * 0.005) * 0.05;
-      ringRef.current.scale.setScalar(sculptMode ? sculptRadius * 2 : scale);
+      ringRef.current.scale.setScalar(sculptMode ? sculptRadius * 2 : 1);
     }
   });
 
   if (!visible) return null;
 
-  const cursorColor = magneticMode 
-    ? (isOnSurface ? '#22c55e' : '#eab308') 
-    : '#3b82f6';
-  
+  // Simplified color - single color for magnetic mode (cyan), stable
+  const cursorColor = magneticMode ? '#06b6d4' : '#3b82f6';
   const sculptColor = sculptMode ? '#ef4444' : cursorColor;
 
   return (
@@ -183,9 +241,16 @@ export function Cursor3D() {
         depthTest={false}
       />
 
-      {/* Normal indicator (only in magnetic mode) */}
+      {/* Normal indicator (only in magnetic mode when on surface) */}
       {magneticMode && isOnSurface && (
-        <arrowHelper args={[new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0), 0.5, 0x22c55e, 0.1, 0.05]} />
+        <Line
+          points={[[0, 0, 0], [0, 0.5, 0]]}
+          color="#06b6d4"
+          lineWidth={2}
+          transparent
+          opacity={0.8}
+          depthTest={false}
+        />
       )}
 
       {/* Sculpt radius preview */}
