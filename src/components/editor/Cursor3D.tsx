@@ -13,8 +13,9 @@ export function Cursor3D() {
     setNormal, setIsOnSurface, setRotation, magneticSettings
   } = useCursor3DStore();
   
-  const { camera, raycaster, scene, gl } = useThree();
+  const { camera, scene, gl } = useThree();
   const mouse = useRef(new THREE.Vector2());
+  const raycasterRef = useRef(new THREE.Raycaster());
   const planeHelper = useRef(new THREE.Plane());
   const intersectionPoint = useRef(new THREE.Vector3());
   
@@ -78,6 +79,7 @@ export function Cursor3D() {
       maxNormalChangeRate
     } = magneticSettings;
 
+    const raycaster = raycasterRef.current;
     raycaster.setFromCamera(mouse.current, camera);
 
     let rawTargetPosition = new THREE.Vector3();
@@ -86,22 +88,35 @@ export function Cursor3D() {
 
     if (magneticMode) {
       // Magnetic mode - snap to object surfaces
-      // Collect all meshes except cursor-related ones
-      const meshes: THREE.Mesh[] = [];
+      // Collect all valid scene meshes for raycasting
+      const meshes: THREE.Object3D[] = [];
+      
       scene.traverse((obj) => {
-        if (obj instanceof THREE.Mesh) {
-          // Exclude cursor, gizmos, helpers, and grid
-          const isCursor = obj.parent?.name === 'cursor3d' || obj.name === 'cursor3d';
-          const isHelper = obj.type.includes('Helper') || obj.parent?.type.includes('Helper');
-          const isGizmo = obj.name.includes('gizmo') || obj.parent?.name.includes('gizmo');
-          
-          if (!isCursor && !isHelper && !isGizmo && obj.geometry) {
-            meshes.push(obj);
-          }
+        // Only include standard meshes with geometry
+        if (!(obj instanceof THREE.Mesh) || !obj.geometry) return;
+        
+        // Skip invisible objects
+        if (!obj.visible) return;
+        
+        // Check the entire parent chain for cursor group
+        let parent: THREE.Object3D | null = obj;
+        while (parent) {
+          if (parent.name === 'cursor3d') return;
+          parent = parent.parent;
         }
+        
+        // Skip helper types
+        if (obj.type.includes('Helper')) return;
+        if (obj.type === 'GridHelper') return;
+        
+        // Skip contact shadows, environment, etc
+        if (obj.name.includes('shadow') || obj.name.includes('Shadow')) return;
+        if (obj.material && (obj.material as THREE.Material).visible === false) return;
+        
+        meshes.push(obj);
       });
 
-      const intersects = raycaster.intersectObjects(meshes, false);
+      const intersects = raycaster.intersectObjects(meshes, true);
       
       if (intersects.length > 0 && intersects[0].face) {
         const hit = intersects[0];
