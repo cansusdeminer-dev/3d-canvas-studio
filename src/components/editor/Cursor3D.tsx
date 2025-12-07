@@ -4,18 +4,13 @@ import { Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { useCursor3DStore } from '@/hooks/useCursor3DStore';
 
-// Smoothing configuration
-const POSITION_LERP = 0.15; // Position interpolation speed
-const NORMAL_LERP = 0.1;    // Normal interpolation speed (slower for stability)
-const MIN_SURFACE_TIME = 0.1; // Minimum time on surface before confirming
-
 export function Cursor3D() {
   const groupRef = useRef<THREE.Group>(null);
   const ringRef = useRef<THREE.Mesh>(null);
   const {
     position, normal, plane, height, magneticMode, magneticAngle,
     isOnSurface, visible, sculptMode, sculptRadius, setPosition,
-    setNormal, setIsOnSurface, setRotation
+    setNormal, setIsOnSurface, setRotation, magneticSettings
   } = useCursor3DStore();
   
   const { camera, raycaster, scene, gl } = useThree();
@@ -26,12 +21,23 @@ export function Cursor3D() {
   // Smoothing state
   const smoothedPosition = useRef(new THREE.Vector3());
   const smoothedNormal = useRef(new THREE.Vector3(0, 1, 0));
+  const targetNormal = useRef(new THREE.Vector3(0, 1, 0));
+  const committedNormal = useRef(new THREE.Vector3(0, 1, 0));
+  const baseQuaternion = useRef(new THREE.Quaternion());
   const smoothedQuaternion = useRef(new THREE.Quaternion());
-  const targetQuaternion = useRef(new THREE.Quaternion());
+  
+  // Velocity tracking
+  const lastPosition = useRef(new THREE.Vector3());
+  const velocity = useRef(new THREE.Vector3());
+  const velocityMagnitude = useRef(0);
+  
+  // Surface tracking
   const surfaceTimer = useRef(0);
-  const lastValidNormal = useRef(new THREE.Vector3(0, 1, 0));
-  const lastValidPosition = useRef(new THREE.Vector3());
+  const offSurfaceTimer = useRef(0);
+  const lastHitNormal = useRef(new THREE.Vector3(0, 1, 0));
+  const lastHitPosition = useRef(new THREE.Vector3());
   const isInitialized = useRef(false);
+  const normalCommitTimer = useRef(0);
 
   // Get plane normal based on current plane setting
   const planeNormal = useMemo(() => {
@@ -65,10 +71,17 @@ export function Cursor3D() {
   useFrame((_, delta) => {
     if (!groupRef.current || !visible) return;
 
+    const {
+      positionLerpMin, positionLerpMax, velocityThreshold,
+      normalLerpMin, normalLerpMax, normalCommitDelay,
+      surfaceHoldTime, minSurfaceConfidence,
+      maxNormalChangeRate
+    } = magneticSettings;
+
     raycaster.setFromCamera(mouse.current, camera);
 
-    let targetPosition = new THREE.Vector3();
-    let targetNormal = new THREE.Vector3(0, 1, 0);
+    let rawTargetPosition = new THREE.Vector3();
+    let rawTargetNormal = new THREE.Vector3(0, 1, 0);
     let hitSurface = false;
 
     if (magneticMode) {
@@ -91,59 +104,102 @@ export function Cursor3D() {
           worldNormal.transformDirection(hit.object.matrixWorld);
         }
 
-        targetPosition.copy(hit.point);
-        targetNormal.copy(worldNormal);
+        rawTargetPosition.copy(hit.point);
+        rawTargetNormal.copy(worldNormal);
         hitSurface = true;
         
-        // Track time on surface for stability
         surfaceTimer.current += delta;
+        offSurfaceTimer.current = 0;
         
-        // Only update last valid if we've been on surface long enough
-        if (surfaceTimer.current > MIN_SURFACE_TIME) {
-          lastValidNormal.current.copy(worldNormal);
-          lastValidPosition.current.copy(hit.point);
-        }
+        // Store last hit for fallback
+        lastHitNormal.current.copy(worldNormal);
+        lastHitPosition.current.copy(hit.point);
       } else {
-        // Lost surface - use last valid or fall back to plane
+        // Lost surface
         surfaceTimer.current = 0;
+        offSurfaceTimer.current += delta;
         
-        if (lastValidNormal.current.lengthSq() > 0) {
-          // Keep last valid orientation but move along plane
-          targetNormal.copy(lastValidNormal.current);
+        // Use last hit data if within hold time
+        if (offSurfaceTimer.current < surfaceHoldTime) {
+          rawTargetNormal.copy(lastHitNormal.current);
+        } else {
+          rawTargetNormal.copy(committedNormal.current);
         }
         
         // Fall back to plane mode positioning
         planeHelper.current.setFromNormalAndCoplanarPoint(planeNormal, new THREE.Vector3(0, height, 0));
         if (raycaster.ray.intersectPlane(planeHelper.current, intersectionPoint.current)) {
-          targetPosition.copy(intersectionPoint.current);
+          rawTargetPosition.copy(intersectionPoint.current);
         }
       }
 
-      // Smooth interpolation for position
+      // Calculate velocity
+      velocity.current.subVectors(rawTargetPosition, lastPosition.current);
+      velocityMagnitude.current = velocity.current.length();
+      lastPosition.current.copy(rawTargetPosition);
+
+      // Adaptive lerp based on velocity
+      const velocityFactor = Math.min(velocityMagnitude.current / velocityThreshold, 1);
+      const positionLerp = THREE.MathUtils.lerp(positionLerpMax, positionLerpMin, velocityFactor);
+      const normalLerp = THREE.MathUtils.lerp(normalLerpMax, normalLerpMin, velocityFactor);
+
+      // Initialize on first frame
       if (!isInitialized.current) {
-        smoothedPosition.current.copy(targetPosition);
-        smoothedNormal.current.copy(targetNormal);
+        smoothedPosition.current.copy(rawTargetPosition);
+        smoothedNormal.current.copy(rawTargetNormal);
+        targetNormal.current.copy(rawTargetNormal);
+        committedNormal.current.copy(rawTargetNormal);
+        baseQuaternion.current.setFromUnitVectors(new THREE.Vector3(0, 1, 0), rawTargetNormal);
+        smoothedQuaternion.current.copy(baseQuaternion.current);
         isInitialized.current = true;
-      } else {
-        smoothedPosition.current.lerp(targetPosition, POSITION_LERP);
-        smoothedNormal.current.lerp(targetNormal, NORMAL_LERP).normalize();
       }
+
+      // Position interpolation
+      smoothedPosition.current.lerp(rawTargetPosition, positionLerp);
+
+      // Normal with rate limiting
+      if (hitSurface && surfaceTimer.current > minSurfaceConfidence) {
+        // Calculate angle difference
+        const angleDiff = Math.acos(Math.min(1, targetNormal.current.dot(rawTargetNormal))) * (180 / Math.PI);
+        const maxChange = maxNormalChangeRate * delta * 60; // Normalize to 60fps
+        
+        if (angleDiff <= maxChange) {
+          targetNormal.current.copy(rawTargetNormal);
+        } else {
+          // Limit rate of normal change
+          const t = maxChange / angleDiff;
+          targetNormal.current.lerp(rawTargetNormal, t).normalize();
+        }
+        
+        // Normal commit timer
+        normalCommitTimer.current += delta;
+        if (normalCommitTimer.current > normalCommitDelay) {
+          committedNormal.current.copy(targetNormal.current);
+        }
+      } else if (!hitSurface) {
+        normalCommitTimer.current = 0;
+      }
+
+      // Smooth normal interpolation
+      smoothedNormal.current.lerp(targetNormal.current, normalLerp).normalize();
 
       setPosition(smoothedPosition.current);
       setNormal(smoothedNormal.current);
-      setIsOnSurface(hitSurface && surfaceTimer.current > MIN_SURFACE_TIME);
+      setIsOnSurface(hitSurface && surfaceTimer.current > minSurfaceConfidence);
 
-      // Calculate target quaternion
+      // Calculate base quaternion from smoothed normal
       const up = new THREE.Vector3(0, 1, 0);
-      targetQuaternion.current.setFromUnitVectors(up, smoothedNormal.current);
+      const newBaseQuat = new THREE.Quaternion().setFromUnitVectors(up, smoothedNormal.current);
       
-      // Apply magnetic angle rotation around the normal
+      // Apply magnetic angle rotation AROUND the current smoothed normal
       const angleQuat = new THREE.Quaternion();
       angleQuat.setFromAxisAngle(smoothedNormal.current, magneticAngle);
-      targetQuaternion.current.multiply(angleQuat);
+      
+      // Combine: first align to normal, then rotate around it
+      const targetQuat = newBaseQuat.clone().multiply(angleQuat);
       
       // Smooth quaternion interpolation
-      smoothedQuaternion.current.slerp(targetQuaternion.current, NORMAL_LERP);
+      smoothedQuaternion.current.slerp(targetQuat, normalLerp);
       
       groupRef.current.quaternion.copy(smoothedQuaternion.current);
       groupRef.current.position.copy(smoothedPosition.current);
@@ -154,6 +210,8 @@ export function Cursor3D() {
       // Plane-constrained mode
       setIsOnSurface(false);
       surfaceTimer.current = 0;
+      offSurfaceTimer.current = 0;
+      normalCommitTimer.current = 0;
       
       const planePoint = new THREE.Vector3();
       
@@ -172,14 +230,14 @@ export function Cursor3D() {
       planeHelper.current.setFromNormalAndCoplanarPoint(planeNormal, planePoint);
       
       if (raycaster.ray.intersectPlane(planeHelper.current, intersectionPoint.current)) {
-        targetPosition.copy(intersectionPoint.current);
+        rawTargetPosition.copy(intersectionPoint.current);
         
-        // Smooth position in plane mode too
+        // Faster lerp in plane mode
         if (!isInitialized.current) {
-          smoothedPosition.current.copy(targetPosition);
+          smoothedPosition.current.copy(rawTargetPosition);
           isInitialized.current = true;
         } else {
-          smoothedPosition.current.lerp(targetPosition, POSITION_LERP * 2); // Faster in plane mode
+          smoothedPosition.current.lerp(rawTargetPosition, positionLerpMax);
         }
         
         setPosition(smoothedPosition.current);
@@ -188,7 +246,7 @@ export function Cursor3D() {
       }
     }
 
-    // Static scale for ring (no breathing animation)
+    // Scale for sculpt mode
     if (ringRef.current) {
       ringRef.current.scale.setScalar(sculptMode ? sculptRadius * 2 : 1);
     }
@@ -196,7 +254,6 @@ export function Cursor3D() {
 
   if (!visible) return null;
 
-  // Simplified color - single color for magnetic mode (cyan), stable
   const cursorColor = magneticMode ? '#06b6d4' : '#3b82f6';
   const sculptColor = sculptMode ? '#ef4444' : cursorColor;
 
