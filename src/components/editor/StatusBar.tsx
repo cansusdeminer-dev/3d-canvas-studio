@@ -1,10 +1,12 @@
 import { useEditorStore } from '@/hooks/useEditorStore';
 import { useCursor3DStore } from '@/hooks/useCursor3DStore';
-import { Box, Layers, Magnet, Grid3X3, Brush, ArrowDown, ArrowRight, ArrowUp, Crosshair, Target, Hand, Minus, Plus, RotateCcw } from 'lucide-react';
+import { Box, Layers, Magnet, Grid3X3, Brush, ArrowUp, Crosshair, Target, Hand, Minus, Plus, RotateCcw, Settings2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { Slider } from '@/components/ui/slider';
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
+import { MagneticSettingsPanel } from './MagneticSettingsPanel';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -121,11 +123,25 @@ export function StatusBar() {
         </Tooltip>
 
         {magneticMode && (
-          <div className="flex items-center gap-1 px-2 text-[9px] font-mono bg-background/50 rounded h-6">
-            <RotateCcw size={10} />
-            <span>{(magneticAngle * 180 / Math.PI).toFixed(0)}°</span>
-            {isOnSurface && <Target size={10} className="text-green-400 ml-1" />}
-          </div>
+          <>
+            <div className="flex items-center gap-1 px-2 text-[9px] font-mono bg-background/50 rounded h-6">
+              <RotateCcw size={10} />
+              <span>{(magneticAngle * 180 / Math.PI).toFixed(0)}°</span>
+              {isOnSurface && <Target size={10} className="text-green-400 ml-1" />}
+            </div>
+            
+            {/* Magnetic Settings Button */}
+            <Sheet>
+              <SheetTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-7 px-2 text-[10px]">
+                  <Settings2 size={12} />
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="right" className="w-80 p-0">
+                <MagneticSettingsPanel />
+              </SheetContent>
+            </Sheet>
+          </>
         )}
 
         <div className="h-4 w-px bg-border mx-1" />
