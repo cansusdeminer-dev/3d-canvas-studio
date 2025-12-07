@@ -86,23 +86,30 @@ export function Cursor3D() {
 
     if (magneticMode) {
       // Magnetic mode - snap to object surfaces
-      const meshes: THREE.Object3D[] = [];
+      // Collect all meshes except cursor-related ones
+      const meshes: THREE.Mesh[] = [];
       scene.traverse((obj) => {
-        if (obj instanceof THREE.Mesh && obj.name !== 'cursor3d') {
-          meshes.push(obj);
+        if (obj instanceof THREE.Mesh) {
+          // Exclude cursor, gizmos, helpers, and grid
+          const isCursor = obj.parent?.name === 'cursor3d' || obj.name === 'cursor3d';
+          const isHelper = obj.type.includes('Helper') || obj.parent?.type.includes('Helper');
+          const isGizmo = obj.name.includes('gizmo') || obj.parent?.name.includes('gizmo');
+          
+          if (!isCursor && !isHelper && !isGizmo && obj.geometry) {
+            meshes.push(obj);
+          }
         }
       });
 
-      const intersects = raycaster.intersectObjects(meshes, true);
+      const intersects = raycaster.intersectObjects(meshes, false);
       
       if (intersects.length > 0 && intersects[0].face) {
         const hit = intersects[0];
         const worldNormal = hit.face.normal.clone();
         
-        // Transform normal to world space
-        if (hit.object instanceof THREE.Mesh) {
-          worldNormal.transformDirection(hit.object.matrixWorld);
-        }
+        // Transform normal to world space using the object's world matrix
+        const normalMatrix = new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld);
+        worldNormal.applyMatrix3(normalMatrix).normalize();
 
         rawTargetPosition.copy(hit.point);
         rawTargetNormal.copy(worldNormal);
