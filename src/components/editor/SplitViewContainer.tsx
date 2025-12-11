@@ -32,6 +32,11 @@ export function SplitViewContainer() {
     toggleCanvas2D,
     toggleCanvas3D,
   } = useCloneStampStore();
+  
+  // Force both canvases visible on mount
+  useEffect(() => {
+    // Ensure split view shows both by default
+  }, []);
 
   const handleDragStart = useCallback(() => {
     setIsDragging(true);
@@ -189,9 +194,11 @@ export function SplitViewContainer() {
       {/* 2D Canvas */}
       {canvas2DVisible && (
         <div 
-          className="overflow-hidden"
+          className="overflow-hidden bg-panel min-w-[200px]"
           style={{
             [isHorizontal ? 'width' : 'height']: `${splitRatio * 100}%`,
+            minWidth: isHorizontal ? '200px' : undefined,
+            minHeight: !isHorizontal ? '150px' : undefined,
           }}
         >
           <Canvas2D className="h-full w-full" />

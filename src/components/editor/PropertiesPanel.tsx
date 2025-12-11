@@ -138,7 +138,7 @@ export function PropertiesPanel() {
   const selectedObject = objects.find(obj => obj.id === selectedObjectId);
 
   return (
-    <div className="panel w-72 flex flex-col h-full overflow-hidden">
+    <div className="flex flex-col h-full overflow-hidden bg-panel">
       <div className="panel-header border-b border-border">
         Properties
       </div>
