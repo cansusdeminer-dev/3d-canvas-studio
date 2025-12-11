@@ -33,9 +33,13 @@ export function Canvas2D({ className = '' }: Canvas2DProps) {
     const container = containerRef.current;
     const rect = container.getBoundingClientRect();
     
+    // Use default dimensions if container hasn't rendered yet
+    const width = rect.width || 400;
+    const height = rect.height || 400;
+    
     const canvas = new FabricCanvas(canvasRef.current, {
-      width: rect.width,
-      height: rect.height,
+      width,
+      height,
       backgroundColor: '#1a1a1a',
       selection: false,
     });

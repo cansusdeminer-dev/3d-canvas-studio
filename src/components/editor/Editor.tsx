@@ -1,8 +1,6 @@
 import { useState } from 'react';
 import { Header } from './Header';
 import { Toolbar } from './Toolbar';
-import { LayersPanel } from './LayersPanel';
-import { PropertiesPanel } from './PropertiesPanel';
 import { StatusBar } from './StatusBar';
 import { DropZone } from './DropZone';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -12,6 +10,7 @@ import { ArchitectureDiagram } from './ArchitectureDiagram';
 import { SDFDrawer } from './SDFDrawer';
 import { SplitViewContainer } from './SplitViewContainer';
 import { CloneStampToolbar } from './CloneStampToolbar';
+import { RightDrawerBar } from './RightDrawerBar';
 
 export function Editor() {
   const [showArchitecture, setShowArchitecture] = useState(false);
@@ -26,24 +25,26 @@ export function Editor() {
         />
         
         <div className="flex-1 flex min-h-0 overflow-hidden">
+          {/* Left: Tools */}
           <Toolbar onOpenSDFGraph={() => setShowSDFGraph(true)} />
           
-          <div className="flex-1 flex min-h-0 overflow-hidden">
-            <LayersPanel />
-            
+          {/* Center: Viewport */}
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
             <DropZone>
-              <div className="flex-1 h-full relative min-h-0 flex flex-col">
+              <div className="flex-1 h-full relative min-h-0">
                 <SplitViewContainer />
                 <TexturePainterOverlay />
                 <UVEditor />
               </div>
             </DropZone>
             
-            <PropertiesPanel />
+            <CloneStampToolbar />
           </div>
+          
+          {/* Right: Drawer Bar + Drawers */}
+          <RightDrawerBar onOpenSDFGraph={() => setShowSDFGraph(true)} />
         </div>
         
-        <CloneStampToolbar />
         <StatusBar />
         
         <ArchitectureDiagram 

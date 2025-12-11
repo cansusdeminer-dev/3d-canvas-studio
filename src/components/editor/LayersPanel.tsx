@@ -154,7 +154,7 @@ export function LayersPanel() {
   };
 
   return (
-    <div className="panel w-64 flex flex-col h-full overflow-hidden">
+    <div className="flex flex-col h-full overflow-hidden bg-panel">
       <div className="panel-header border-b border-border">
         Scene Hierarchy
       </div>
