@@ -16,6 +16,7 @@ import { SceneLights } from './SceneLights';
 import { Cursor3D } from './Cursor3D';
 import { CursorControls } from './CursorControls';
 import { SculptBrush } from './SculptBrush';
+import { CloneStampPainterScene } from './CloneStampPainter';
 import * as THREE from 'three';
 
 function Scene() {
@@ -80,6 +81,7 @@ function Scene() {
       <Cursor3D />
       <CursorControls />
       <SculptBrush />
+      <CloneStampPainterScene />
       
       {selectedObject && transformMode !== 'select' && (
         <TransformControls
@@ -155,7 +157,7 @@ function LoadingFallback() {
 
 export function Viewport() {
   return (
-    <div className="canvas-container absolute inset-0">
+    <div className="canvas-container w-full h-full relative">
       <Canvas
         shadows
         gl={{ 
