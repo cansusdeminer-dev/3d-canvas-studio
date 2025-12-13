@@ -11,19 +11,31 @@ import {
   ContactShadows
 } from '@react-three/drei';
 import { useEditorStore } from '@/hooks/useEditorStore';
+import { useCloneStampStore } from '@/hooks/useCloneStampStore';
 import { SceneObjects } from './SceneObjects';
 import { SceneLights } from './SceneLights';
 import { Cursor3D } from './Cursor3D';
 import { CursorControls } from './CursorControls';
 import { SculptBrush } from './SculptBrush';
 import { CloneStampPainterScene } from './CloneStampPainter';
+import { CloneStampCursor } from './CloneStampCursor';
 import * as THREE from 'three';
 
 function Scene() {
-  const { showGrid, transformMode, selectedObjectId, objects, setSelectedObjectId } = useEditorStore();
+  const { showGrid, transformMode, selectedObjectId, objects, setSelectedObjectId, paintMode } = useEditorStore();
+  const { isActive: cloneStampActive, isStroking } = useCloneStampStore();
   const orbitRef = useRef<any>(null);
   
   const selectedObject = objects.find(obj => obj.id === selectedObjectId)?.object;
+  
+  // Disable orbit controls when using painting tools
+  const disableCamera = paintMode || (cloneStampActive && isStroking);
+  
+  useEffect(() => {
+    if (orbitRef.current) {
+      orbitRef.current.enabled = !disableCamera;
+    }
+  }, [disableCamera]);
 
   const handleMissed = useCallback((e: any) => {
     e.stopPropagation();
@@ -78,10 +90,11 @@ function Scene() {
       <SceneObjects onMissed={handleMissed} />
       
       {/* 3D Cursor System */}
-      <Cursor3D />
+      {!cloneStampActive && <Cursor3D />}
       <CursorControls />
       <SculptBrush />
       <CloneStampPainterScene />
+      {cloneStampActive && <CloneStampCursor />}
       
       {selectedObject && transformMode !== 'select' && (
         <TransformControls
