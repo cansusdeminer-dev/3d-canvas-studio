@@ -19,6 +19,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 export function SplitViewContainer() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const initialized = useRef(false);
   
   const {
     splitMode,
@@ -33,15 +34,17 @@ export function SplitViewContainer() {
     toggleCanvas3D,
   } = useCloneStampStore();
   
-  // Force both canvases visible on mount
+  // Force both canvases visible on mount (only once)
   useEffect(() => {
-    if (!canvas2DVisible) {
-      toggleCanvas2D();
-    }
-    if (!canvas3DVisible) {
-      toggleCanvas3D();
-    }
-  }, []); // Only run once on mount
+    if (initialized.current) return;
+    initialized.current = true;
+    
+    // Use setTimeout to avoid calling during render
+    setTimeout(() => {
+      if (!canvas2DVisible) toggleCanvas2D();
+      if (!canvas3DVisible) toggleCanvas3D();
+    }, 0);
+  }, [canvas2DVisible, canvas3DVisible, toggleCanvas2D, toggleCanvas3D]);
 
   const handleDragStart = useCallback(() => {
     setIsDragging(true);
