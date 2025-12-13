@@ -1,7 +1,6 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
-import { useThree, useFrame } from '@react-three/fiber';
+import { useThree } from '@react-three/fiber';
 import { useCloneStampStore } from '@/hooks/useCloneStampStore';
-import { useCursor3DStore } from '@/hooks/useCursor3DStore';
 import * as THREE from 'three';
 
 interface CloneStampPainterProps {
@@ -35,8 +34,6 @@ export function CloneStampPainter({ targetMesh }: CloneStampPainterProps) {
     beginStroke,
     endStroke
   } = useCloneStampStore();
-
-  const { magneticMode, position: cursorPosition, normal: cursorNormal } = useCursor3DStore();
 
   // Paint texture reference
   const textureRef = useRef<THREE.CanvasTexture | null>(null);
@@ -120,7 +117,9 @@ export function CloneStampPainter({ targetMesh }: CloneStampPainterProps) {
 
   // Paint at a 3D hit point
   const paintAt3D = useCallback((hitPoint: THREE.Vector3, uv: THREE.Vector2) => {
-    if (!paintCanvasRef.current || !textureRef.current || !sourceAnchor || !targetAnchor3D) return;
+    if (!paintCanvasRef.current || !textureRef.current || !sourceAnchor || !targetAnchor3D) {
+      return;
+    }
 
     const canvas = paintCanvasRef.current;
     const ctx = canvas.getContext('2d');
@@ -138,9 +137,9 @@ export function CloneStampPainter({ targetMesh }: CloneStampPainterProps) {
     const cx = uv.x * canvas.width;
     const cy = (1 - uv.y) * canvas.height;
 
-    // Paint with brush
-    const radius = brushRadius;
-    const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+    // Brush radius in UV/texture space (scale brush radius relative to canvas size)
+    const uvRadius = (brushRadius / 100) * canvas.width * 0.1;
+    const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, uvRadius);
     
     const r = color[0];
     const g = color[1];
@@ -153,7 +152,7 @@ export function CloneStampPainter({ targetMesh }: CloneStampPainterProps) {
 
     ctx.fillStyle = gradient;
     ctx.beginPath();
-    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.arc(cx, cy, uvRadius, 0, Math.PI * 2);
     ctx.fill();
 
     textureRef.current.needsUpdate = true;
@@ -253,6 +252,8 @@ export function CloneStampPainterScene() {
   const { scene } = useThree();
   const { isActive, mode } = useCloneStampStore();
   const [targetMesh, setTargetMesh] = useState<THREE.Mesh | null>(null);
+  const sceneRef = useRef(scene);
+  sceneRef.current = scene;
 
   // Find first valid mesh in scene to paint on
   useEffect(() => {
@@ -261,15 +262,38 @@ export function CloneStampPainterScene() {
       return;
     }
 
-    scene.traverse((obj) => {
-      if (obj instanceof THREE.Mesh && obj.name !== 'cursor3d' && !obj.name.includes('shadow')) {
-        if (obj.geometry && obj.geometry.attributes.uv) {
-          setTargetMesh(obj);
-          return;
+    // Delay to ensure scene is populated
+    const findMesh = () => {
+      let foundMesh: THREE.Mesh | null = null;
+      sceneRef.current.traverse((obj) => {
+        if (foundMesh) return;
+        if (!(obj instanceof THREE.Mesh)) return;
+        if (!obj.geometry) return;
+        if (!obj.geometry.attributes.uv) return;
+        if (obj.name === 'cursor3d' || obj.name.includes('shadow') || obj.name === 'clonestamp-cursor') return;
+        if (obj.type.includes('Helper')) return;
+        
+        // Check it's a scene object, not a UI element
+        let parent: THREE.Object3D | null = obj.parent;
+        while (parent) {
+          if (parent.name === 'clonestamp-cursor' || parent.name === 'cursor3d') return;
+          parent = parent.parent;
         }
+        
+        foundMesh = obj;
+      });
+      
+      if (foundMesh) {
+        console.log('CloneStampPainter: Found target mesh', foundMesh.name || foundMesh.uuid);
+        setTargetMesh(foundMesh);
       }
-    });
-  }, [isActive, mode, scene]);
+    };
+    
+    // Try immediately and after a short delay
+    findMesh();
+    const timer = setTimeout(findMesh, 100);
+    return () => clearTimeout(timer);
+  }, [isActive, mode]);
 
   if (!isActive || mode !== '2d-to-3d' || !targetMesh) return null;
 

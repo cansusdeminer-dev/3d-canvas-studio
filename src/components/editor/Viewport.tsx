@@ -29,7 +29,8 @@ function Scene() {
   const selectedObject = objects.find(obj => obj.id === selectedObjectId)?.object;
   
   // Disable orbit controls when using painting tools
-  const disableCamera = paintMode || (cloneStampActive && isStroking);
+  // Disable camera when painting tools are active (clone stamp always disables for precision)
+  const disableCamera = paintMode || cloneStampActive;
   
   useEffect(() => {
     if (orbitRef.current) {

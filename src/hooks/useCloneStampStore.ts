@@ -106,10 +106,10 @@ export const useCloneStampStore = create<CloneStampStore>((set, get) => ({
   strokeId: 0,
   
   splitMode: 'horizontal',
-  splitRatio: 0.4,
+  splitRatio: 0.35,
   overlayOpacity: 0.5,
-  canvas2DVisible: true,
-  canvas3DVisible: true,
+  canvas2DVisible: true,  // Default visible
+  canvas3DVisible: true,  // Default visible
   
   // Actions
   setActive: (active) => set({ isActive: active }),
