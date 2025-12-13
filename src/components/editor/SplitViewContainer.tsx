@@ -35,8 +35,13 @@ export function SplitViewContainer() {
   
   // Force both canvases visible on mount
   useEffect(() => {
-    // Ensure split view shows both by default
-  }, []);
+    if (!canvas2DVisible) {
+      toggleCanvas2D();
+    }
+    if (!canvas3DVisible) {
+      toggleCanvas3D();
+    }
+  }, []); // Only run once on mount
 
   const handleDragStart = useCallback(() => {
     setIsDragging(true);
