@@ -12,9 +12,11 @@ import {
   Magnet,
   Paintbrush,
   Layout,
-  Workflow
+  Workflow,
+  Stamp
 } from 'lucide-react';
 import { useEditorStore } from '@/hooks/useEditorStore';
+import { useCloneStampStore } from '@/hooks/useCloneStampStore';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { PrimitivesMenu } from './PrimitivesMenu';
 import { CSGOperations } from './CSGOperations';
@@ -75,6 +77,8 @@ export function Toolbar({ onOpenSDFGraph }: ToolbarProps) {
     showUVEditor,
     toggleUVEditor
   } = useEditorStore();
+  
+  const { isActive: cloneStampActive, setActive: setCloneStampActive } = useCloneStampStore();
 
   return (
     <div className="panel flex flex-col items-center py-2 px-1.5 gap-0.5 w-12">
@@ -134,6 +138,13 @@ export function Toolbar({ onOpenSDFGraph }: ToolbarProps) {
         shortcut="P"
         active={paintMode}
         onClick={togglePaintMode}
+      />
+      <ToolButton
+        icon={<Stamp size={18} />}
+        label="Clone Stamp"
+        shortcut="C"
+        active={cloneStampActive}
+        onClick={() => setCloneStampActive(!cloneStampActive)}
       />
       <ToolButton
         icon={<Layout size={18} />}
