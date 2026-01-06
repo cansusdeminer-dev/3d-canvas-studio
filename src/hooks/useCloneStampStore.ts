@@ -11,6 +11,39 @@ export interface CloneAnchor3D {
   normal: THREE.Vector3;
   tangent: THREE.Vector3;
   bitangent: THREE.Vector3;
+  uv: THREE.Vector2;
+}
+
+// Projection modes for mapping 2D texture to 3D surfaces
+export type ProjectionMode = 'planar' | 'cylindrical' | 'spherical' | 'uv-based';
+
+// How to handle curvature when painting
+export type CurvatureMode = 'ignore' | 'adapt' | 'stretch';
+
+export interface TextureSettings {
+  // Scale of the source texture in world units
+  worldScale: number;
+  // UV scale multiplier
+  uvScale: { u: number; v: number };
+  // Offset in UV space
+  uvOffset: { u: number; v: number };
+  // Whether to tile the source texture
+  tiling: boolean;
+  // Blend mode for painting
+  blendMode: 'normal' | 'multiply' | 'overlay' | 'soft-light';
+}
+
+export interface SurfaceSettings {
+  // How to project the texture onto surfaces
+  projectionMode: ProjectionMode;
+  // How to handle surface curvature
+  curvatureMode: CurvatureMode;
+  // Whether to follow surface normals
+  followNormals: boolean;
+  // Curvature threshold for adaptive mode (0-1)
+  curvatureThreshold: number;
+  // Seam blending radius in pixels
+  seamBlendRadius: number;
 }
 
 export interface CloneStampState {
@@ -33,10 +66,18 @@ export interface CloneStampState {
   brushScale: number;  // scaling factor
   brushOpacity: number;
   brushHardness: number;  // falloff 0-1
+  brushSpacing: number;  // percentage of brush size between dabs
+  
+  // Texture settings
+  textureSettings: TextureSettings;
+  
+  // Surface settings  
+  surfaceSettings: SurfaceSettings;
   
   // Stroke state
   isStroking: boolean;
   strokeId: number;  // increments each new stroke
+  lastDabPosition: THREE.Vector3 | null;
   
   // View settings
   splitMode: 'horizontal' | 'vertical' | 'overlay' | 'tabs';
@@ -44,6 +85,10 @@ export interface CloneStampState {
   overlayOpacity: number;  // for overlay mode
   canvas2DVisible: boolean;
   canvas3DVisible: boolean;
+  
+  // Paint history for undo
+  paintHistory: ImageData[];
+  historyIndex: number;
 }
 
 interface CloneStampStore extends CloneStampState {
@@ -55,7 +100,7 @@ interface CloneStampStore extends CloneStampState {
   setSourceImage: (url: string, size: { width: number; height: number }) => void;
   clearSourceImage: () => void;
   
-  // Anchors - CRITICAL: these are set once per stroke and NEVER modified during stroke
+  // Anchors
   setSourceAnchor: (anchor: CloneAnchor2D) => void;
   setTargetAnchor2D: (anchor: CloneAnchor2D) => void;
   setTargetAnchor3D: (anchor: CloneAnchor3D) => void;
@@ -67,10 +112,18 @@ interface CloneStampStore extends CloneStampState {
   setBrushScale: (scale: number) => void;
   setBrushOpacity: (opacity: number) => void;
   setBrushHardness: (hardness: number) => void;
+  setBrushSpacing: (spacing: number) => void;
+  
+  // Texture settings
+  setTextureSettings: (settings: Partial<TextureSettings>) => void;
+  
+  // Surface settings
+  setSurfaceSettings: (settings: Partial<SurfaceSettings>) => void;
   
   // Stroke control
   beginStroke: () => void;
   endStroke: () => void;
+  setLastDabPosition: (pos: THREE.Vector3 | null) => void;
   
   // View settings
   setSplitMode: (mode: 'horizontal' | 'vertical' | 'overlay' | 'tabs') => void;
@@ -81,8 +134,29 @@ interface CloneStampStore extends CloneStampState {
   
   // Clone math utilities
   getSourceSamplePosition2D: (targetX: number, targetY: number) => CloneAnchor2D | null;
-  getSourceSamplePosition3D: (hitPoint: THREE.Vector3) => CloneAnchor2D | null;
+  getSourceSamplePosition3D: (hitPoint: THREE.Vector3, hitNormal: THREE.Vector3, hitUV: THREE.Vector2) => CloneAnchor2D | null;
+  
+  // History
+  pushHistory: (imageData: ImageData) => void;
+  undo: () => ImageData | null;
+  redo: () => ImageData | null;
 }
+
+const defaultTextureSettings: TextureSettings = {
+  worldScale: 1,
+  uvScale: { u: 1, v: 1 },
+  uvOffset: { u: 0, v: 0 },
+  tiling: false,
+  blendMode: 'normal',
+};
+
+const defaultSurfaceSettings: SurfaceSettings = {
+  projectionMode: 'planar',
+  curvatureMode: 'adapt',
+  followNormals: true,
+  curvatureThreshold: 0.5,
+  seamBlendRadius: 10,
+};
 
 export const useCloneStampStore = create<CloneStampStore>((set, get) => ({
   // Initial state
@@ -101,15 +175,23 @@ export const useCloneStampStore = create<CloneStampStore>((set, get) => ({
   brushScale: 1,
   brushOpacity: 1,
   brushHardness: 0.8,
+  brushSpacing: 25,
+  
+  textureSettings: defaultTextureSettings,
+  surfaceSettings: defaultSurfaceSettings,
   
   isStroking: false,
   strokeId: 0,
+  lastDabPosition: null,
   
   splitMode: 'horizontal',
   splitRatio: 0.35,
   overlayOpacity: 0.5,
-  canvas2DVisible: true,  // Default visible
-  canvas3DVisible: true,  // Default visible
+  canvas2DVisible: true,
+  canvas3DVisible: true,
+  
+  paintHistory: [],
+  historyIndex: -1,
   
   // Actions
   setActive: (active) => set({ isActive: active }),
@@ -125,7 +207,8 @@ export const useCloneStampStore = create<CloneStampStore>((set, get) => ({
       position: anchor.position.clone(),
       normal: anchor.normal.clone(),
       tangent: anchor.tangent.clone(),
-      bitangent: anchor.bitangent.clone()
+      bitangent: anchor.bitangent.clone(),
+      uv: anchor.uv.clone()
     }
   }),
   clearAnchors: () => set({ sourceAnchor: null, targetAnchor2D: null, targetAnchor3D: null }),
@@ -135,9 +218,19 @@ export const useCloneStampStore = create<CloneStampStore>((set, get) => ({
   setBrushScale: (scale) => set({ brushScale: scale }),
   setBrushOpacity: (opacity) => set({ brushOpacity: opacity }),
   setBrushHardness: (hardness) => set({ brushHardness: hardness }),
+  setBrushSpacing: (spacing) => set({ brushSpacing: spacing }),
   
-  beginStroke: () => set((s) => ({ isStroking: true, strokeId: s.strokeId + 1 })),
-  endStroke: () => set({ isStroking: false }),
+  setTextureSettings: (settings) => set((state) => ({
+    textureSettings: { ...state.textureSettings, ...settings }
+  })),
+  
+  setSurfaceSettings: (settings) => set((state) => ({
+    surfaceSettings: { ...state.surfaceSettings, ...settings }
+  })),
+  
+  beginStroke: () => set((s) => ({ isStroking: true, strokeId: s.strokeId + 1, lastDabPosition: null })),
+  endStroke: () => set({ isStroking: false, lastDabPosition: null }),
+  setLastDabPosition: (pos) => set({ lastDabPosition: pos }),
   
   setSplitMode: (mode) => set({ splitMode: mode }),
   setSplitRatio: (ratio) => set({ splitRatio: Math.max(0.1, Math.min(0.9, ratio)) }),
@@ -167,27 +260,128 @@ export const useCloneStampStore = create<CloneStampStore>((set, get) => ({
     };
   },
   
-  getSourceSamplePosition3D: (hitPoint) => {
-    const { sourceAnchor, targetAnchor3D, brushRotation, brushScale } = get();
+  getSourceSamplePosition3D: (hitPoint, hitNormal, hitUV) => {
+    const { 
+      sourceAnchor, 
+      targetAnchor3D, 
+      brushRotation, 
+      textureSettings,
+      surfaceSettings 
+    } = get();
     if (!sourceAnchor || !targetAnchor3D) return null;
     
-    // Δ = P - P0
-    const delta = hitPoint.clone().sub(targetAnchor3D.position);
+    const { projectionMode, curvatureMode, followNormals, curvatureThreshold } = surfaceSettings;
+    const { worldScale, uvScale } = textureSettings;
     
-    // Project into tangent plane: (u, v)
-    const u = delta.dot(targetAnchor3D.tangent);
-    const v = delta.dot(targetAnchor3D.bitangent);
+    let u: number, v: number;
     
-    // Same 2D clone math in tangent space
+    if (projectionMode === 'uv-based') {
+      // Use UV coordinates directly
+      const deltaU = (hitUV.x - targetAnchor3D.uv.x) * uvScale.u;
+      const deltaV = (hitUV.y - targetAnchor3D.uv.y) * uvScale.v;
+      
+      // Apply rotation in UV space
+      const cosA = Math.cos(-brushRotation);
+      const sinA = Math.sin(-brushRotation);
+      u = cosA * deltaU - sinA * deltaV;
+      v = sinA * deltaU + cosA * deltaV;
+      
+      // Scale to source image pixels
+      const sourceSize = get().sourceImageSize;
+      if (sourceSize) {
+        return {
+          x: sourceAnchor.x + u * sourceSize.width * worldScale,
+          y: sourceAnchor.y + v * sourceSize.height * worldScale
+        };
+      }
+    } else {
+      // Δ = P - P0
+      const delta = hitPoint.clone().sub(targetAnchor3D.position);
+      
+      // Handle curvature adaptation
+      let adaptedTangent = targetAnchor3D.tangent.clone();
+      let adaptedBitangent = targetAnchor3D.bitangent.clone();
+      
+      if (followNormals && curvatureMode === 'adapt') {
+        // Compute curvature difference
+        const normalDot = hitNormal.dot(targetAnchor3D.normal);
+        
+        if (normalDot < (1 - curvatureThreshold)) {
+          // Significant curvature - recompute tangent frame at hit point
+          const up = Math.abs(hitNormal.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+          adaptedTangent = new THREE.Vector3().crossVectors(up, hitNormal).normalize();
+          adaptedBitangent = new THREE.Vector3().crossVectors(hitNormal, adaptedTangent).normalize();
+        }
+      }
+      
+      if (projectionMode === 'planar') {
+        // Project into tangent plane: (u, v)
+        u = delta.dot(adaptedTangent);
+        v = delta.dot(adaptedBitangent);
+      } else if (projectionMode === 'cylindrical') {
+        // Cylindrical projection - use angle around the vertical axis
+        const projXZ = new THREE.Vector2(delta.x, delta.z);
+        const angle = Math.atan2(projXZ.y, projXZ.x);
+        const radius = projXZ.length();
+        u = angle * radius;
+        v = delta.y;
+      } else if (projectionMode === 'spherical') {
+        // Spherical projection
+        const r = delta.length();
+        if (r > 0.001) {
+          const theta = Math.atan2(delta.x, delta.z);
+          const phi = Math.acos(Math.max(-1, Math.min(1, delta.y / r)));
+          u = theta * r;
+          v = phi * r;
+        } else {
+          u = v = 0;
+        }
+      } else {
+        // Default planar
+        u = delta.dot(adaptedTangent);
+        v = delta.dot(adaptedBitangent);
+      }
+    }
+    
+    // Apply rotation
     const cosA = Math.cos(-brushRotation);
     const sinA = Math.sin(-brushRotation);
     const sxOff = cosA * u - sinA * v;
     const syOff = sinA * u + cosA * v;
     
-    // Convert world units to pixels (brushScale = world units per pixel)
+    // Convert world units to pixels using worldScale
+    // worldScale = how many world units per source pixel
+    const pixelScale = 1 / worldScale;
+    
     return {
-      x: sourceAnchor.x + sxOff / brushScale,
-      y: sourceAnchor.y + syOff / brushScale
+      x: sourceAnchor.x + sxOff * pixelScale,
+      y: sourceAnchor.y + syOff * pixelScale
     };
+  },
+  
+  pushHistory: (imageData) => set((state) => {
+    const newHistory = state.paintHistory.slice(0, state.historyIndex + 1);
+    newHistory.push(imageData);
+    // Limit history to 20 entries
+    if (newHistory.length > 20) newHistory.shift();
+    return { paintHistory: newHistory, historyIndex: newHistory.length - 1 };
+  }),
+  
+  undo: () => {
+    const state = get();
+    if (state.historyIndex > 0) {
+      set({ historyIndex: state.historyIndex - 1 });
+      return state.paintHistory[state.historyIndex - 1];
+    }
+    return null;
+  },
+  
+  redo: () => {
+    const state = get();
+    if (state.historyIndex < state.paintHistory.length - 1) {
+      set({ historyIndex: state.historyIndex + 1 });
+      return state.paintHistory[state.historyIndex + 1];
+    }
+    return null;
   }
 }));

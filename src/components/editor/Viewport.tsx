@@ -23,18 +23,35 @@ import * as THREE from 'three';
 
 function Scene() {
   const { showGrid, transformMode, selectedObjectId, objects, setSelectedObjectId, paintMode } = useEditorStore();
-  const { isActive: cloneStampActive, isStroking } = useCloneStampStore();
+  const { isActive: cloneStampActive } = useCloneStampStore();
   const orbitRef = useRef<any>(null);
   
   const selectedObject = objects.find(obj => obj.id === selectedObjectId)?.object;
   
-  // Disable orbit controls when using painting tools
-  // Disable camera when painting tools are active (clone stamp always disables for precision)
+  // CRITICAL: Disable camera movement completely when clone stamp is active
+  // This ensures precise painting without accidental camera rotation
   const disableCamera = paintMode || cloneStampActive;
   
+  // Apply camera disable state
   useEffect(() => {
     if (orbitRef.current) {
       orbitRef.current.enabled = !disableCamera;
+    }
+  }, [disableCamera]);
+  
+  // Also block pointer events from affecting orbit controls when painting
+  useEffect(() => {
+    if (!orbitRef.current) return;
+    
+    const controls = orbitRef.current;
+    if (disableCamera) {
+      controls.enableRotate = false;
+      controls.enablePan = false;
+      controls.enableZoom = false;
+    } else {
+      controls.enableRotate = true;
+      controls.enablePan = true;
+      controls.enableZoom = true;
     }
   }, [disableCamera]);
 

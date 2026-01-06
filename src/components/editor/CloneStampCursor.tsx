@@ -5,101 +5,84 @@ import * as THREE from 'three';
 
 // Create a texture from the source image centered on the anchor
 function useSourcePreviewTexture() {
-  const { sourceImageUrl, sourceAnchor, brushRadius } = useCloneStampStore();
+  const { sourceImageUrl, sourceAnchor, brushRadius, brushScale, textureSettings } = useCloneStampStore();
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
   
+  // Load image once
   useEffect(() => {
-    if (!sourceImageUrl || !sourceAnchor) {
+    if (!sourceImageUrl) {
       setTexture(null);
+      imageRef.current = null;
       return;
     }
     
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
-      // Create canvas for the circular preview
-      const size = 256;
-      const canvas = document.createElement('canvas');
-      canvas.width = size;
-      canvas.height = size;
-      canvasRef.current = canvas;
-      
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      
-      // Clear with transparency
-      ctx.clearRect(0, 0, size, size);
-      
-      // Create circular clipping path
-      ctx.beginPath();
-      ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
-      ctx.closePath();
-      ctx.clip();
-      
-      // Calculate source region to sample
-      const sampleRadius = brushRadius;
-      const sx = sourceAnchor.x - sampleRadius;
-      const sy = sourceAnchor.y - sampleRadius;
-      const sw = sampleRadius * 2;
-      const sh = sampleRadius * 2;
-      
-      // Draw the source image region
-      ctx.drawImage(
-        img,
-        sx, sy, sw, sh,
-        0, 0, size, size
-      );
-      
-      // Create texture
-      const tex = new THREE.CanvasTexture(canvas);
-      tex.needsUpdate = true;
-      setTexture(tex);
+      imageRef.current = img;
+      // Trigger texture update
+      updateTexture(img);
     };
     img.src = sourceImageUrl;
     
     return () => {
-      if (texture) texture.dispose();
+      imageRef.current = null;
     };
-  }, [sourceImageUrl, sourceAnchor, brushRadius]);
+  }, [sourceImageUrl]);
   
-  // Update texture when anchor moves during preview
-  useEffect(() => {
-    if (!canvasRef.current || !sourceAnchor || !sourceImageUrl) return;
+  const updateTexture = (img: HTMLImageElement) => {
+    if (!sourceAnchor) {
+      setTexture(null);
+      return;
+    }
     
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      
-      const size = canvas.width;
-      ctx.clearRect(0, 0, size, size);
-      
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
-      ctx.closePath();
-      ctx.clip();
-      
-      const sampleRadius = brushRadius;
-      const sx = sourceAnchor.x - sampleRadius;
-      const sy = sourceAnchor.y - sampleRadius;
-      const sw = sampleRadius * 2;
-      const sh = sampleRadius * 2;
-      
-      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, size, size);
-      ctx.restore();
-      
-      if (texture) {
-        texture.needsUpdate = true;
-      }
-    };
-    img.src = sourceImageUrl;
-  }, [sourceAnchor, brushRadius, sourceImageUrl, texture]);
+    const size = 256;
+    let canvas = canvasRef.current;
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      canvasRef.current = canvas;
+    }
+    
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    
+    ctx.clearRect(0, 0, size, size);
+    
+    // Create circular clip
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    
+    // Calculate sample region based on brush settings
+    const sampleRadius = brushRadius / textureSettings.worldScale;
+    const sx = sourceAnchor.x - sampleRadius;
+    const sy = sourceAnchor.y - sampleRadius;
+    const sw = sampleRadius * 2;
+    const sh = sampleRadius * 2;
+    
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, size, size);
+    ctx.restore();
+    
+    // Create or update texture
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.needsUpdate = true;
+    setTexture(tex);
+  };
+  
+  // Update when anchor or brush settings change
+  useEffect(() => {
+    if (imageRef.current && sourceAnchor) {
+      updateTexture(imageRef.current);
+    } else {
+      setTexture(null);
+    }
+  }, [sourceAnchor, brushRadius, brushScale, textureSettings.worldScale]);
   
   return texture;
 }
@@ -114,7 +97,9 @@ export function CloneStampCursor() {
     isActive,
     sourceAnchor,
     brushRadius,
-    brushScale
+    brushScale,
+    textureSettings,
+    surfaceSettings
   } = useCloneStampStore();
   
   const previewTexture = useSourcePreviewTexture();
@@ -123,16 +108,6 @@ export function CloneStampCursor() {
   const smoothedPosition = useRef(new THREE.Vector3());
   const smoothedNormal = useRef(new THREE.Vector3(0, 1, 0));
   const isInitialized = useRef(false);
-  
-  // Ring geometry
-  const ringGeometry = useMemo(() => {
-    return new THREE.RingGeometry(0.45, 0.5, 64);
-  }, []);
-  
-  // Circle geometry for preview
-  const circleGeometry = useMemo(() => {
-    return new THREE.CircleGeometry(0.5, 64);
-  }, []);
   
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -156,14 +131,18 @@ export function CloneStampCursor() {
       if (!(obj instanceof THREE.Mesh) || !obj.geometry) return;
       if (!obj.visible) return;
       
-      let parent: THREE.Object3D | null = obj;
-      while (parent) {
-        if (parent.name === 'clonestamp-cursor' || parent.name === 'cursor3d') return;
-        parent = parent.parent;
+      // Skip UI elements
+      const skipNames = ['clonestamp-cursor', 'cursor3d', 'shadow', 'Shadow', 'grid', 'Grid', 'Helper'];
+      let skip = false;
+      let current: THREE.Object3D | null = obj;
+      while (current) {
+        if (skipNames.some(n => current!.name.includes(n) || current!.type.includes(n))) {
+          skip = true;
+          break;
+        }
+        current = current.parent;
       }
-      
-      if (obj.type.includes('Helper')) return;
-      if (obj.name.includes('shadow') || obj.name.includes('Shadow')) return;
+      if (skip) return;
       
       meshes.push(obj);
     });
@@ -185,7 +164,11 @@ export function CloneStampCursor() {
         smoothedNormal.current.lerp(worldNormal, 0.2).normalize();
       }
       
-      groupRef.current.position.copy(smoothedPosition.current);
+      // Position slightly above surface
+      const offset = smoothedNormal.current.clone().multiplyScalar(0.01);
+      groupRef.current.position.copy(smoothedPosition.current).add(offset);
+      
+      // Orient to face along normal
       groupRef.current.quaternion.setFromUnitVectors(
         new THREE.Vector3(0, 0, 1),
         smoothedNormal.current
@@ -198,56 +181,100 @@ export function CloneStampCursor() {
   
   if (!isActive) return null;
   
-  const worldRadius = brushRadius * brushScale * 0.01; // Convert to world units
+  // Calculate world radius based on brush settings
+  const worldRadius = (brushRadius * brushScale * textureSettings.worldScale) / 100;
   
   return (
     <group ref={groupRef} name="clonestamp-cursor">
-      {/* Outer ring */}
-      <mesh rotation={[0, 0, 0]}>
+      {/* Outer ring - green when anchor set, red when not */}
+      <mesh>
         <ringGeometry args={[worldRadius * 0.95, worldRadius, 64]} />
         <meshBasicMaterial 
-          color="#22c55e" 
+          color={sourceAnchor ? "#22c55e" : "#ef4444"}
           transparent 
-          opacity={0.8}
+          opacity={0.9}
           side={THREE.DoubleSide}
           depthTest={false}
+          depthWrite={false}
+        />
+      </mesh>
+      
+      {/* Inner fill with projection mode indicator */}
+      <mesh position={[0, 0, 0.001]}>
+        <circleGeometry args={[worldRadius * 0.9, 64]} />
+        <meshBasicMaterial 
+          color={sourceAnchor ? "#22c55e" : "#ef4444"}
+          transparent 
+          opacity={0.1}
+          side={THREE.DoubleSide}
+          depthTest={false}
+          depthWrite={false}
         />
       </mesh>
       
       {/* Source preview inside the circle */}
       {previewTexture && sourceAnchor && (
-        <mesh rotation={[0, 0, 0]} position={[0, 0, 0.001]}>
-          <circleGeometry args={[worldRadius * 0.9, 64]} />
+        <mesh position={[0, 0, 0.002]}>
+          <circleGeometry args={[worldRadius * 0.85, 64]} />
           <meshBasicMaterial 
             map={previewTexture}
             transparent 
             opacity={0.5}
             side={THREE.DoubleSide}
             depthTest={false}
+            depthWrite={false}
           />
         </mesh>
       )}
       
       {/* Center crosshair */}
-      {sourceAnchor && (
-        <>
-          <mesh position={[0, 0, 0.002]}>
-            <planeGeometry args={[worldRadius * 0.1, worldRadius * 0.02]} />
-            <meshBasicMaterial color="#22c55e" transparent opacity={1} depthTest={false} />
-          </mesh>
-          <mesh position={[0, 0, 0.002]}>
-            <planeGeometry args={[worldRadius * 0.02, worldRadius * 0.1]} />
-            <meshBasicMaterial color="#22c55e" transparent opacity={1} depthTest={false} />
-          </mesh>
-        </>
+      <mesh position={[0, 0, 0.003]}>
+        <planeGeometry args={[worldRadius * 0.15, worldRadius * 0.02]} />
+        <meshBasicMaterial 
+          color={sourceAnchor ? "#22c55e" : "#ef4444"} 
+          transparent 
+          opacity={1} 
+          depthTest={false}
+          depthWrite={false}
+        />
+      </mesh>
+      <mesh position={[0, 0, 0.003]}>
+        <planeGeometry args={[worldRadius * 0.02, worldRadius * 0.15]} />
+        <meshBasicMaterial 
+          color={sourceAnchor ? "#22c55e" : "#ef4444"} 
+          transparent 
+          opacity={1} 
+          depthTest={false}
+          depthWrite={false}
+        />
+      </mesh>
+      
+      {/* Projection mode indicator */}
+      {surfaceSettings.projectionMode === 'spherical' && (
+        <mesh position={[0, 0, 0.004]}>
+          <ringGeometry args={[worldRadius * 0.3, worldRadius * 0.35, 32]} />
+          <meshBasicMaterial 
+            color="#3b82f6" 
+            transparent 
+            opacity={0.5}
+            side={THREE.DoubleSide}
+            depthTest={false}
+            depthWrite={false}
+          />
+        </mesh>
       )}
       
-      {/* No anchor indicator */}
-      {!sourceAnchor && (
-        <mesh position={[0, 0, 0.002]}>
-          <ringGeometry args={[worldRadius * 0.15, worldRadius * 0.2, 32]} />
-          <meshBasicMaterial color="#ef4444" transparent opacity={0.8} depthTest={false} side={THREE.DoubleSide} />
-        </mesh>
+      {surfaceSettings.projectionMode === 'cylindrical' && (
+        <>
+          <mesh position={[-worldRadius * 0.4, 0, 0.004]}>
+            <planeGeometry args={[worldRadius * 0.02, worldRadius * 0.6]} />
+            <meshBasicMaterial color="#3b82f6" transparent opacity={0.5} depthTest={false} depthWrite={false} />
+          </mesh>
+          <mesh position={[worldRadius * 0.4, 0, 0.004]}>
+            <planeGeometry args={[worldRadius * 0.02, worldRadius * 0.6]} />
+            <meshBasicMaterial color="#3b82f6" transparent opacity={0.5} depthTest={false} depthWrite={false} />
+          </mesh>
+        </>
       )}
     </group>
   );
