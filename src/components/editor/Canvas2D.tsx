@@ -93,47 +93,39 @@ export function Canvas2D({ className = '' }: Canvas2DProps) {
     });
   }, [fabricCanvas, sourceImageUrl]);
 
-  // Handle Alt+Click to set source anchor
+  // Handle Alt+Click to set source anchor (use Fabric events for reliability)
   useEffect(() => {
     if (!fabricCanvas) return;
-    
-    const handleMouseDown = (e: MouseEvent) => {
+
+    const handler = (opt: any) => {
       if (!isActive) return;
-      
-      if (e.altKey) {
-        const rect = canvasRef.current?.getBoundingClientRect();
-        if (!rect) return;
-        
-        // Get click position in canvas space
-        const pointer = fabricCanvas.getPointer(e);
-        
-        // Find the image to get actual pixel coordinates
-        const objects = fabricCanvas.getObjects();
-        const img = objects.find(obj => obj instanceof FabricImage) as FabricImage | undefined;
-        
-        if (img) {
-          // Transform canvas coords to image pixel coords
-          const imgLeft = img.left || 0;
-          const imgTop = img.top || 0;
-          const imgScale = img.scaleX || 1;
-          
-          const pixelX = (pointer.x - imgLeft) / imgScale;
-          const pixelY = (pointer.y - imgTop) / imgScale;
-          
-          setSourceAnchor({ x: pixelX, y: pixelY });
-          toast.success(`Source anchor set at (${Math.round(pixelX)}, ${Math.round(pixelY)})`);
-        }
-        
-        e.preventDefault();
-        e.stopPropagation();
-      }
+      const e = opt?.e as MouseEvent | undefined;
+      if (!e?.altKey) return;
+
+      const pointer = fabricCanvas.getPointer(e);
+
+      // Find the image to get actual pixel coordinates
+      const objects = fabricCanvas.getObjects();
+      const img = objects.find((obj) => obj instanceof FabricImage) as FabricImage | undefined;
+      if (!img) return;
+
+      const imgLeft = img.left || 0;
+      const imgTop = img.top || 0;
+      const imgScale = img.scaleX || 1;
+
+      const pixelX = (pointer.x - imgLeft) / imgScale;
+      const pixelY = (pointer.y - imgTop) / imgScale;
+
+      setSourceAnchor({ x: pixelX, y: pixelY });
+      toast.success(`Source anchor set at (${Math.round(pixelX)}, ${Math.round(pixelY)})`);
+
+      e.preventDefault();
+      e.stopPropagation();
     };
-    
-    const canvasEl = canvasRef.current?.parentElement;
-    canvasEl?.addEventListener('mousedown', handleMouseDown);
-    
+
+    fabricCanvas.on('mouse:down', handler);
     return () => {
-      canvasEl?.removeEventListener('mousedown', handleMouseDown);
+      fabricCanvas.off('mouse:down', handler);
     };
   }, [fabricCanvas, isActive, setSourceAnchor]);
 

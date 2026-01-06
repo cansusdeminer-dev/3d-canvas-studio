@@ -122,7 +122,8 @@ function Scene() {
             if (orbitRef.current) orbitRef.current.enabled = false;
           }}
           onMouseUp={() => {
-            if (orbitRef.current) orbitRef.current.enabled = true;
+            // Don't accidentally re-enable camera while a painting tool is active
+            if (orbitRef.current) orbitRef.current.enabled = !(paintMode || cloneStampActive);
           }}
         />
       )}
