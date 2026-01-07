@@ -34,7 +34,7 @@ function isDescendant(root: THREE.Object3D, obj: THREE.Object3D): boolean {
   return false;
 }
 
-function computeTriangleTangentFrame(mesh: THREE.Mesh, face: THREE.Face3, worldNormal: THREE.Vector3) {
+function computeTriangleTangentFrame(mesh: THREE.Mesh, face: THREE.Face, worldNormal: THREE.Vector3) {
   const geom = mesh.geometry as THREE.BufferGeometry;
   const posAttr = geom.attributes.position as THREE.BufferAttribute | undefined;
   const uvAttr = geom.attributes.uv as THREE.BufferAttribute | undefined;
@@ -397,7 +397,7 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       worldNormal.applyMatrix3(normalMatrix).normalize();
 
       // Tangent frame derived from triangle UVs (stable per-face orientation)
-      const { tangent, bitangent } = computeTriangleTangentFrame(mesh, hit.face as any, worldNormal);
+      const { tangent, bitangent } = computeTriangleTangentFrame(mesh, hit.face, worldNormal);
 
       setTargetAnchor3D({
         position: hit.point.clone(),
