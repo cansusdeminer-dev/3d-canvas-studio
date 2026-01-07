@@ -1,8 +1,9 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
-import { useThree } from '@react-three/fiber';
+import { useThree, useFrame } from '@react-three/fiber';
 import { useCloneStampStore } from '@/hooks/useCloneStampStore';
 import { useEditorStore } from '@/hooks/useEditorStore';
 import * as THREE from 'three';
+import { Html } from '@react-three/drei';
 
 interface PaintTarget {
   root: THREE.Object3D;
@@ -16,6 +17,16 @@ interface CloneStampPainterProps {
 let sourceCanvas: HTMLCanvasElement | null = null;
 let sourceCtx: CanvasRenderingContext2D | null = null;
 let sourceImageData: ImageData | null = null;
+
+// Debug overlay state (module-level for persistence)
+interface DebugInfo {
+  hitUV: THREE.Vector2;
+  sourceCenter: { x: number; y: number };
+  targetAnchorUV: THREE.Vector2;
+  uvDelta: { u: number; v: number };
+  worldPos: THREE.Vector3;
+}
+let debugInfo: DebugInfo | null = null;
 
 type MeshPaintState = {
   canvas: HTMLCanvasElement;
@@ -102,6 +113,7 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
     sourceImageSize,
     sourceAnchor,
     brushRadius,
+    brushRotation,
     brushOpacity,
     brushHardness,
     brushSpacing,
@@ -109,7 +121,7 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
     textureSettings,
     isStroking,
     lastDabPosition,
-    getSourceSamplePosition3D,
+    targetAnchor3D,
     setTargetAnchor3D,
     setLastDabPosition,
     beginStroke,
@@ -250,9 +262,10 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
   );
 
   const paintDab = useCallback(
-    (hit: THREE.Intersection<THREE.Object3D>) => {
+    (hit: THREE.Intersection<THREE.Object3D>, targetAnchor3D: { uv: THREE.Vector2 } | null) => {
       if (!sourceAnchor || !sourceImageData || !sourceImageSize) return;
       if (!hit.uv || !hit.face) return;
+      if (!targetAnchor3D) return;
 
       const mesh = hit.object as THREE.Mesh;
       if (!mesh?.isMesh) return;
@@ -260,18 +273,40 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const geom = mesh.geometry as THREE.BufferGeometry;
       if (!geom?.attributes?.uv) return;
 
-      // World-space normal
-      const worldNormal = hit.face.normal.clone();
-      const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
-      worldNormal.applyMatrix3(normalMatrix).normalize();
-
-      const sourceCenter = getSourceSamplePosition3D(hit.point, worldNormal, hit.uv);
-      if (!sourceCenter) return;
-
       const paintState = ensureMeshPaintState(mesh);
       const { canvas, ctx } = paintState;
 
-      // Map source-pixel brush radius to target texture pixels (keeps the stamp coherent)
+      // ===== UV-BASED SOURCE SAMPLING (THE KEY FIX) =====
+      // UV delta from stroke start to current hit
+      const duUV = hit.uv.x - targetAnchor3D.uv.x;
+      const dvUV = hit.uv.y - targetAnchor3D.uv.y;
+
+      // Apply rotation in UV space: R(-θ)
+      const cosA = Math.cos(-brushRotation);
+      const sinA = Math.sin(-brushRotation);
+      const duRot = cosA * duUV - sinA * dvUV;
+      const dvRot = sinA * duUV + cosA * dvUV;
+
+      // Scale UV delta by source image size and inverse of brush scale
+      // This maps: moving 1 UV unit on target -> moving sourceImageSize pixels on source (adjusted by scale)
+      const sourceOffsetX = (duRot * sourceImageSize.width) / brushScale;
+      const sourceOffsetY = (dvRot * sourceImageSize.height) / brushScale;
+
+      const sourceCenter = {
+        x: sourceAnchor.x + sourceOffsetX,
+        y: sourceAnchor.y + sourceOffsetY,
+      };
+
+      // Update debug info
+      debugInfo = {
+        hitUV: hit.uv.clone(),
+        sourceCenter,
+        targetAnchorUV: targetAnchor3D.uv.clone(),
+        uvDelta: { u: duUV, v: dvUV },
+        worldPos: hit.point.clone(),
+      };
+
+      // Map source-pixel brush radius to target texture pixels
       const radiusPx = Math.max(1, brushRadius * brushScale * (canvas.width / sourceImageSize.width));
 
       const cx = hit.uv.x * canvas.width;
@@ -288,9 +323,11 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const img = ctx.getImageData(minX, minY, w, h);
       const data = img.data;
 
-      // Convert target texture pixels back to source pixels (inverse of the radius mapping above)
+      // Convert target texture pixels back to source pixels
       const targetPxToSourcePxX = sourceImageSize.width / canvas.width;
       const targetPxToSourcePxY = sourceImageSize.height / canvas.height;
+
+      let paintedCount = 0;
 
       for (let yy = 0; yy < h; yy++) {
         const py = minY + yy + 0.5;
@@ -332,19 +369,22 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
           data[idx + 1] = Math.round(outG);
           data[idx + 2] = Math.round(outB);
           data[idx + 3] = Math.round(outA * 255);
+          paintedCount++;
         }
       }
 
       ctx.putImageData(img, minX, minY);
       paintState.texture.needsUpdate = true;
+
+      console.log('CloneStamp: Dab painted', paintedCount, 'pixels, UV:', hit.uv.x.toFixed(3), hit.uv.y.toFixed(3), 'sourceCenter:', sourceCenter.x.toFixed(1), sourceCenter.y.toFixed(1));
     },
     [
       sourceAnchor,
       sourceImageSize,
-      getSourceSamplePosition3D,
       ensureMeshPaintState,
       brushRadius,
       brushScale,
+      brushRotation,
       brushHardness,
       brushOpacity,
       sampleSourceColor,
@@ -399,16 +439,19 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       // Tangent frame derived from triangle UVs (stable per-face orientation)
       const { tangent, bitangent } = computeTriangleTangentFrame(mesh, hit.face, worldNormal);
 
-      setTargetAnchor3D({
+      const newAnchor = {
         position: hit.point.clone(),
         normal: worldNormal,
         tangent,
         bitangent,
         uv: hit.uv.clone(),
-      });
+      };
+
+      setTargetAnchor3D(newAnchor);
 
       beginStroke();
-      paintDab(hit as any);
+      // Pass the anchor directly since store may not have updated yet
+      paintDab(hit as any, newAnchor);
       setLastDabPosition(hit.point.clone());
 
       console.log('CloneStamp: Stroke start', mesh.name || mesh.uuid);
@@ -433,7 +476,7 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const spacingDistance = Math.max(1e-6, brushRadiusWorld * (brushSpacing / 100));
       if (lastDabPosition && hit.point.distanceTo(lastDabPosition) < spacingDistance) return;
 
-      paintDab(hit as any);
+      paintDab(hit as any, targetAnchor3D);
       setLastDabPosition(hit.point.clone());
     };
 
@@ -477,6 +520,38 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
   return null;
 }
 
+// Debug overlay component showing clone stamp state
+function CloneStampDebugOverlay() {
+  const { isStroking, sourceAnchor, targetAnchor3D, sourceImageSize } = useCloneStampStore();
+  const [displayInfo, setDisplayInfo] = useState<DebugInfo | null>(null);
+
+  useFrame(() => {
+    if (debugInfo && isStroking) {
+      setDisplayInfo({ ...debugInfo });
+    } else if (!isStroking) {
+      setDisplayInfo(null);
+    }
+  });
+
+  if (!displayInfo || !isStroking) return null;
+
+  return (
+    <Html
+      position={[displayInfo.worldPos.x, displayInfo.worldPos.y + 0.5, displayInfo.worldPos.z]}
+      style={{ pointerEvents: 'none' }}
+    >
+      <div className="bg-black/80 text-white text-xs p-2 rounded font-mono whitespace-nowrap">
+        <div>hit.uv: ({displayInfo.hitUV.x.toFixed(3)}, {displayInfo.hitUV.y.toFixed(3)})</div>
+        <div>anchor.uv: ({displayInfo.targetAnchorUV.x.toFixed(3)}, {displayInfo.targetAnchorUV.y.toFixed(3)})</div>
+        <div>Δuv: ({displayInfo.uvDelta.u.toFixed(3)}, {displayInfo.uvDelta.v.toFixed(3)})</div>
+        <div className="text-green-400">srcCenter: ({displayInfo.sourceCenter.x.toFixed(1)}, {displayInfo.sourceCenter.y.toFixed(1)})</div>
+        {sourceAnchor && <div className="text-yellow-400">srcAnchor: ({sourceAnchor.x.toFixed(1)}, {sourceAnchor.y.toFixed(1)})</div>}
+        {sourceImageSize && <div className="text-blue-400">srcSize: {sourceImageSize.width}×{sourceImageSize.height}</div>}
+      </div>
+    </Html>
+  );
+}
+
 export function CloneStampPainterScene() {
   const { isActive, mode } = useCloneStampStore();
   const { objects } = useEditorStore();
@@ -513,5 +588,10 @@ export function CloneStampPainterScene() {
   if (!isActive || mode !== '2d-to-3d') return null;
   if (paintTargets.length === 0) return null;
 
-  return <CloneStampPainter paintTargets={paintTargets} />;
+  return (
+    <>
+      <CloneStampPainter paintTargets={paintTargets} />
+      <CloneStampDebugOverlay />
+    </>
+  );
 }
