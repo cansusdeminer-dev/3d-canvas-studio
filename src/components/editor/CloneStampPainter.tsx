@@ -21,16 +21,78 @@ type MeshPaintState = {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   texture: THREE.CanvasTexture;
-  material: THREE.MeshStandardMaterial;
+  paintMaterials: THREE.MeshStandardMaterial[];
   originalMaterial: THREE.Material | THREE.Material[];
 };
+
+function isDescendant(root: THREE.Object3D, obj: THREE.Object3D): boolean {
+  let cur: THREE.Object3D | null = obj;
+  while (cur) {
+    if (cur === root) return true;
+    cur = cur.parent;
+  }
+  return false;
+}
+
+function computeTriangleTangentFrame(mesh: THREE.Mesh, face: THREE.Face3, worldNormal: THREE.Vector3) {
+  const geom = mesh.geometry as THREE.BufferGeometry;
+  const posAttr = geom.attributes.position as THREE.BufferAttribute | undefined;
+  const uvAttr = geom.attributes.uv as THREE.BufferAttribute | undefined;
+  if (!posAttr || !uvAttr) {
+    // fallback
+    let up = new THREE.Vector3(0, 1, 0);
+    if (Math.abs(worldNormal.dot(up)) > 0.9) up = new THREE.Vector3(1, 0, 0);
+    const tangent = new THREE.Vector3().crossVectors(up, worldNormal).normalize();
+    const bitangent = new THREE.Vector3().crossVectors(worldNormal, tangent).normalize();
+    return { tangent, bitangent };
+  }
+
+  const getPos = (i: number) => new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(mesh.matrixWorld);
+  const getUV = (i: number) => new THREE.Vector2(uvAttr.getX(i), uvAttr.getY(i));
+
+  const i0 = face.a;
+  const i1 = face.b;
+  const i2 = face.c;
+
+  const p0 = getPos(i0);
+  const p1 = getPos(i1);
+  const p2 = getPos(i2);
+
+  const uv0 = getUV(i0);
+  const uv1 = getUV(i1);
+  const uv2 = getUV(i2);
+
+  const dp1 = p1.clone().sub(p0);
+  const dp2 = p2.clone().sub(p0);
+  const duv1 = uv1.clone().sub(uv0);
+  const duv2 = uv2.clone().sub(uv0);
+
+  const denom = duv1.x * duv2.y - duv1.y * duv2.x;
+  if (Math.abs(denom) < 1e-8) {
+    let up = new THREE.Vector3(0, 1, 0);
+    if (Math.abs(worldNormal.dot(up)) > 0.9) up = new THREE.Vector3(1, 0, 0);
+    const tangent = new THREE.Vector3().crossVectors(up, worldNormal).normalize();
+    const bitangent = new THREE.Vector3().crossVectors(worldNormal, tangent).normalize();
+    return { tangent, bitangent };
+  }
+
+  const r = 1 / denom;
+
+  const tangent = dp1.clone().multiplyScalar(duv2.y).sub(dp2.clone().multiplyScalar(duv1.y)).multiplyScalar(r);
+  // Orthonormalize tangent
+  tangent.sub(worldNormal.clone().multiplyScalar(worldNormal.dot(tangent))).normalize();
+
+  const bitangent = new THREE.Vector3().crossVectors(worldNormal, tangent).normalize();
+
+  return { tangent, bitangent };
+}
 
 export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
   const { gl, camera } = useThree();
   const raycasterRef = useRef(new THREE.Raycaster());
   const mouseRef = useRef(new THREE.Vector2());
 
-  const activeStrokeMeshRef = useRef<THREE.Mesh | null>(null);
+  const activeStrokeRootRef = useRef<THREE.Object3D | null>(null);
   const meshPaintMapRef = useRef<Map<string, MeshPaintState>>(new Map());
 
   const {
@@ -45,7 +107,6 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
     brushSpacing,
     brushScale,
     textureSettings,
-    surfaceSettings,
     isStroking,
     lastDabPosition,
     getSourceSamplePosition3D,
@@ -105,25 +166,32 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
     const texture = new THREE.CanvasTexture(canvas);
     texture.needsUpdate = true;
     texture.flipY = false;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.wrapS = THREE.ClampToEdgeWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
 
-    const originalMaterial = mesh.material as any;
+    const originalMaterial = mesh.material as THREE.Material | THREE.Material[];
 
-    // If material is not MeshStandardMaterial, still replace with one for predictable map rendering
-    const baseMat = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as any;
-    const baseColor = baseMat?.color ? baseMat.color : new THREE.Color(0xffffff);
+    const toPaintMaterial = (baseMat: any) => {
+      const baseColor = baseMat?.color ? baseMat.color : new THREE.Color(0xffffff);
+      return new THREE.MeshStandardMaterial({
+        color: baseColor,
+        map: texture,
+        transparent: true,
+        side: THREE.DoubleSide,
+        roughness: baseMat?.roughness ?? 0.7,
+        metalness: baseMat?.metalness ?? 0.3,
+      });
+    };
 
-    const material = new THREE.MeshStandardMaterial({
-      color: baseColor,
-      map: texture,
-      transparent: true,
-      side: THREE.DoubleSide,
-      roughness: baseMat?.roughness ?? 0.7,
-      metalness: baseMat?.metalness ?? 0.3,
-    });
+    const paintMaterials: THREE.MeshStandardMaterial[] = Array.isArray(originalMaterial)
+      ? originalMaterial.map((m) => toPaintMaterial(m))
+      : [toPaintMaterial(originalMaterial)];
 
-    mesh.material = material;
+    mesh.material = Array.isArray(originalMaterial) ? paintMaterials : paintMaterials[0];
 
-    const state: MeshPaintState = { canvas, ctx, texture, material, originalMaterial };
+    const state: MeshPaintState = { canvas, ctx, texture, paintMaterials, originalMaterial };
     meshPaintMapRef.current.set(key, state);
 
     console.log('CloneStamp: Paint texture attached to mesh', mesh.name || mesh.uuid);
@@ -132,123 +200,167 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
   }, []);
 
   // Bilinear sample from source
-  const sampleSourceColor = useCallback((x: number, y: number): [number, number, number, number] | null => {
-    if (!sourceImageData || !sourceImageSize) return null;
+  const sampleSourceColor = useCallback(
+    (x: number, y: number): [number, number, number, number] | null => {
+      if (!sourceImageData || !sourceImageSize) return null;
 
-    const { tiling } = textureSettings;
+      const { tiling } = textureSettings;
 
-    let px = x;
-    let py = y;
+      let px = x;
+      let py = y;
 
-    if (tiling) {
-      px = ((x % sourceImageSize.width) + sourceImageSize.width) % sourceImageSize.width;
-      py = ((y % sourceImageSize.height) + sourceImageSize.height) % sourceImageSize.height;
-    } else {
-      // Clamp so we always paint even near the edges
-      px = Math.max(0, Math.min(sourceImageSize.width - 1, px));
-      py = Math.max(0, Math.min(sourceImageSize.height - 1, py));
-    }
-
-    const x0 = Math.floor(px);
-    const y0 = Math.floor(py);
-    const x1 = Math.min(x0 + 1, sourceImageSize.width - 1);
-    const y1 = Math.min(y0 + 1, sourceImageSize.height - 1);
-    const fx = px - x0;
-    const fy = py - y0;
-
-    const getPixel = (ix: number, iy: number): [number, number, number, number] => {
-      const idx = (iy * sourceImageSize.width + ix) * 4;
-      return [
-        sourceImageData!.data[idx],
-        sourceImageData!.data[idx + 1],
-        sourceImageData!.data[idx + 2],
-        sourceImageData!.data[idx + 3],
-      ];
-    };
-
-    const p00 = getPixel(x0, y0);
-    const p10 = getPixel(x1, y0);
-    const p01 = getPixel(x0, y1);
-    const p11 = getPixel(x1, y1);
-
-    const r = p00[0] * (1 - fx) * (1 - fy) + p10[0] * fx * (1 - fy) + p01[0] * (1 - fx) * fy + p11[0] * fx * fy;
-    const g = p00[1] * (1 - fx) * (1 - fy) + p10[1] * fx * (1 - fy) + p01[1] * (1 - fx) * fy + p11[1] * fx * fy;
-    const b = p00[2] * (1 - fx) * (1 - fy) + p10[2] * fx * (1 - fy) + p01[2] * (1 - fx) * fy + p11[2] * fx * fy;
-    const a = p00[3] * (1 - fx) * (1 - fy) + p10[3] * fx * (1 - fy) + p01[3] * (1 - fx) * fy + p11[3] * fx * fy;
-
-    return [r, g, b, a];
-  }, [sourceImageSize, textureSettings]);
-
-  const computeTangentFrame = useCallback((normal: THREE.Vector3): { tangent: THREE.Vector3; bitangent: THREE.Vector3 } => {
-    let up = new THREE.Vector3(0, 1, 0);
-    if (Math.abs(normal.dot(up)) > 0.9) up = new THREE.Vector3(1, 0, 0);
-    const tangent = new THREE.Vector3().crossVectors(up, normal).normalize();
-    const bitangent = new THREE.Vector3().crossVectors(normal, tangent).normalize();
-    return { tangent, bitangent };
-  }, []);
-
-  const paintDabOnMesh = useCallback((mesh: THREE.Mesh, hitPoint: THREE.Vector3, hitNormal: THREE.Vector3, uv: THREE.Vector2) => {
-    if (!sourceAnchor || !sourceImageData) return;
-
-    const paintState = ensureMeshPaintState(mesh);
-
-    // Get source sample pos
-    const sourcePos = getSourceSamplePosition3D(hitPoint, hitNormal, uv);
-    if (!sourcePos) return;
-
-    const canvas = paintState.canvas;
-
-    // Convert UV -> texture pixel coords
-    const cx = uv.x * canvas.width;
-    const cy = (1 - uv.y) * canvas.height;
-
-    // Map brush radius to texture pixels (simple but predictable)
-    const radiusPx = Math.max(1, (brushRadius * brushScale) * (canvas.width / 1024));
-
-    // Dab spacing grid
-    const steps = Math.max(1, Math.ceil(radiusPx / 2));
-
-    for (let dx = -steps; dx <= steps; dx++) {
-      for (let dy = -steps; dy <= steps; dy++) {
-        const nx = dx / steps;
-        const ny = dy / steps;
-        const dist = Math.sqrt(nx * nx + ny * ny);
-        if (dist > 1) continue;
-
-        let alpha = 1;
-        if (dist > brushHardness) {
-          alpha = 1 - (dist - brushHardness) / (1 - brushHardness);
-        }
-        alpha *= brushOpacity;
-
-        const sourceX = sourcePos.x + dx * (brushRadius / steps);
-        const sourceY = sourcePos.y + dy * (brushRadius / steps);
-        const color = sampleSourceColor(sourceX, sourceY);
-        if (!color) continue;
-
-        const paintX = cx + nx * radiusPx;
-        const paintY = cy + ny * radiusPx;
-
-        const r = Math.round(color[0]);
-        const g = Math.round(color[1]);
-        const b = Math.round(color[2]);
-        const a = (color[3] / 255) * alpha;
-
-        paintState.ctx.fillStyle = `rgba(${r},${g},${b},${a})`;
-        paintState.ctx.fillRect(paintX - 1, paintY - 1, 2, 2);
+      if (tiling) {
+        px = ((x % sourceImageSize.width) + sourceImageSize.width) % sourceImageSize.width;
+        py = ((y % sourceImageSize.height) + sourceImageSize.height) % sourceImageSize.height;
+      } else {
+        px = Math.max(0, Math.min(sourceImageSize.width - 1, px));
+        py = Math.max(0, Math.min(sourceImageSize.height - 1, py));
       }
-    }
 
-    paintState.texture.needsUpdate = true;
-  }, [sourceAnchor, ensureMeshPaintState, getSourceSamplePosition3D, brushRadius, brushScale, brushHardness, brushOpacity, sampleSourceColor]);
+      const x0 = Math.floor(px);
+      const y0 = Math.floor(py);
+      const x1 = Math.min(x0 + 1, sourceImageSize.width - 1);
+      const y1 = Math.min(y0 + 1, sourceImageSize.height - 1);
+      const fx = px - x0;
+      const fy = py - y0;
 
-  const raycast = useCallback((e: MouseEvent, meshes: THREE.Object3D[]) => {
-    const rect = gl.domElement.getBoundingClientRect();
-    mouseRef.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-    mouseRef.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-    raycasterRef.current.setFromCamera(mouseRef.current, camera);
-    return raycasterRef.current.intersectObjects(meshes, true);
-  }, [camera, gl]);
+      const getPixel = (ix: number, iy: number): [number, number, number, number] => {
+        const idx = (iy * sourceImageSize.width + ix) * 4;
+        return [
+          sourceImageData!.data[idx],
+          sourceImageData!.data[idx + 1],
+          sourceImageData!.data[idx + 2],
+          sourceImageData!.data[idx + 3],
+        ];
+      };
+
+      const p00 = getPixel(x0, y0);
+      const p10 = getPixel(x1, y0);
+      const p01 = getPixel(x0, y1);
+      const p11 = getPixel(x1, y1);
+
+      const r = p00[0] * (1 - fx) * (1 - fy) + p10[0] * fx * (1 - fy) + p01[0] * (1 - fx) * fy + p11[0] * fx * fy;
+      const g = p00[1] * (1 - fx) * (1 - fy) + p10[1] * fx * (1 - fy) + p01[1] * (1 - fx) * fy + p11[1] * fx * fy;
+      const b = p00[2] * (1 - fx) * (1 - fy) + p10[2] * fx * (1 - fy) + p01[2] * (1 - fx) * fy + p11[2] * fx * fy;
+      const a = p00[3] * (1 - fx) * (1 - fy) + p10[3] * fx * (1 - fy) + p01[3] * (1 - fx) * fy + p11[3] * fx * fy;
+
+      return [r, g, b, a];
+    },
+    [sourceImageSize, textureSettings]
+  );
+
+  const paintDab = useCallback(
+    (hit: THREE.Intersection<THREE.Object3D>) => {
+      if (!sourceAnchor || !sourceImageData || !sourceImageSize) return;
+      if (!hit.uv || !hit.face) return;
+
+      const mesh = hit.object as THREE.Mesh;
+      if (!mesh?.isMesh) return;
+
+      const geom = mesh.geometry as THREE.BufferGeometry;
+      if (!geom?.attributes?.uv) return;
+
+      // World-space normal
+      const worldNormal = hit.face.normal.clone();
+      const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+      worldNormal.applyMatrix3(normalMatrix).normalize();
+
+      const sourceCenter = getSourceSamplePosition3D(hit.point, worldNormal, hit.uv);
+      if (!sourceCenter) return;
+
+      const paintState = ensureMeshPaintState(mesh);
+      const { canvas, ctx } = paintState;
+
+      // Map source-pixel brush radius to target texture pixels (keeps the stamp coherent)
+      const radiusPx = Math.max(1, brushRadius * brushScale * (canvas.width / sourceImageSize.width));
+
+      const cx = hit.uv.x * canvas.width;
+      const cy = (1 - hit.uv.y) * canvas.height;
+
+      const minX = Math.max(0, Math.floor(cx - radiusPx));
+      const minY = Math.max(0, Math.floor(cy - radiusPx));
+      const maxX = Math.min(canvas.width - 1, Math.ceil(cx + radiusPx));
+      const maxY = Math.min(canvas.height - 1, Math.ceil(cy + radiusPx));
+
+      const w = Math.max(1, maxX - minX + 1);
+      const h = Math.max(1, maxY - minY + 1);
+
+      const img = ctx.getImageData(minX, minY, w, h);
+      const data = img.data;
+
+      // Convert target texture pixels back to source pixels (inverse of the radius mapping above)
+      const targetPxToSourcePxX = sourceImageSize.width / canvas.width;
+      const targetPxToSourcePxY = sourceImageSize.height / canvas.height;
+
+      for (let yy = 0; yy < h; yy++) {
+        const py = minY + yy + 0.5;
+        const dy = py - cy;
+
+        for (let xx = 0; xx < w; xx++) {
+          const px = minX + xx + 0.5;
+          const dx = px - cx;
+
+          const dist = Math.sqrt(dx * dx + dy * dy) / radiusPx;
+          if (dist > 1) continue;
+
+          let mask = 1;
+          if (dist > brushHardness) {
+            mask = 1 - (dist - brushHardness) / Math.max(1e-6, 1 - brushHardness);
+          }
+
+          const srcX = sourceCenter.x + dx * targetPxToSourcePxX;
+          const srcY = sourceCenter.y + dy * targetPxToSourcePxY;
+          const src = sampleSourceColor(srcX, srcY);
+          if (!src) continue;
+
+          const srcA = (src[3] / 255) * brushOpacity * mask;
+          if (srcA <= 0) continue;
+
+          const idx = (yy * w + xx) * 4;
+          const dstR = data[idx];
+          const dstG = data[idx + 1];
+          const dstB = data[idx + 2];
+          const dstA = data[idx + 3] / 255;
+
+          // Normal alpha compositing
+          const outA = srcA + dstA * (1 - srcA);
+          const outR = (src[0] * srcA + dstR * dstA * (1 - srcA)) / Math.max(1e-6, outA);
+          const outG = (src[1] * srcA + dstG * dstA * (1 - srcA)) / Math.max(1e-6, outA);
+          const outB = (src[2] * srcA + dstB * dstA * (1 - srcA)) / Math.max(1e-6, outA);
+
+          data[idx] = Math.round(outR);
+          data[idx + 1] = Math.round(outG);
+          data[idx + 2] = Math.round(outB);
+          data[idx + 3] = Math.round(outA * 255);
+        }
+      }
+
+      ctx.putImageData(img, minX, minY);
+      paintState.texture.needsUpdate = true;
+    },
+    [
+      sourceAnchor,
+      sourceImageSize,
+      getSourceSamplePosition3D,
+      ensureMeshPaintState,
+      brushRadius,
+      brushScale,
+      brushHardness,
+      brushOpacity,
+      sampleSourceColor,
+    ]
+  );
+
+  const raycast = useCallback(
+    (e: MouseEvent, roots: THREE.Object3D[]) => {
+      const rect = gl.domElement.getBoundingClientRect();
+      mouseRef.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouseRef.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycasterRef.current.setFromCamera(mouseRef.current, camera);
+      return raycasterRef.current.intersectObjects(roots, true);
+    },
+    [camera, gl]
+  );
 
   useEffect(() => {
     if (!isActive || mode !== '2d-to-3d') return;
@@ -266,19 +378,26 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       }
 
       const hits = raycast(e, paintableRoots);
-      const hit = hits.find((h) => (h.object as THREE.Mesh).isMesh && !!h.uv && !!h.face);
+      const hit = hits.find((h) => {
+        const obj = h.object as any;
+        return obj?.isMesh && !!h.uv && !!h.face && (obj.geometry as THREE.BufferGeometry)?.attributes?.uv;
+      });
+
       if (!hit || !hit.uv || !hit.face) return;
 
       const mesh = hit.object as THREE.Mesh;
-      console.log('CloneStamp: Stroke start on mesh', mesh.name || mesh.uuid);
-      activeStrokeMeshRef.current = mesh;
 
-      // Compute world normal
+      // Lock stroke to the root that contains this mesh, so it can paint across submeshes/faces
+      const containingRoot = paintableRoots.find((r) => isDescendant(r, mesh));
+      activeStrokeRootRef.current = containingRoot ?? mesh;
+
+      // World normal
       const worldNormal = hit.face.normal.clone();
       const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
       worldNormal.applyMatrix3(normalMatrix).normalize();
 
-      const { tangent, bitangent } = computeTangentFrame(worldNormal);
+      // Tangent frame derived from triangle UVs (stable per-face orientation)
+      const { tangent, bitangent } = computeTriangleTangentFrame(mesh, hit.face as any, worldNormal);
 
       setTargetAnchor3D({
         position: hit.point.clone(),
@@ -289,33 +408,38 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       });
 
       beginStroke();
-      paintDabOnMesh(mesh, hit.point, worldNormal, hit.uv);
+      paintDab(hit as any);
       setLastDabPosition(hit.point.clone());
+
+      console.log('CloneStamp: Stroke start', mesh.name || mesh.uuid);
     };
 
     const handleMouseMove = (e: MouseEvent) => {
       if (!isStroking) return;
-      const mesh = activeStrokeMeshRef.current;
-      if (!mesh) return;
 
-      const hits = raycast(e, [mesh]);
-      const hit = hits.find((h) => !!h.uv && !!h.face);
+      const root = activeStrokeRootRef.current;
+      if (!root) return;
+
+      const hits = raycast(e, [root]);
+      const hit = hits.find((h) => {
+        const obj = h.object as any;
+        return obj?.isMesh && !!h.uv && !!h.face && (obj.geometry as THREE.BufferGeometry)?.attributes?.uv;
+      });
+
       if (!hit || !hit.uv || !hit.face) return;
 
-      const worldNormal = hit.face.normal.clone();
-      const normalMatrix = new THREE.Matrix3().getNormalMatrix((hit.object as THREE.Mesh).matrixWorld);
-      worldNormal.applyMatrix3(normalMatrix).normalize();
-
-      const spacingDistance = brushRadius * (brushSpacing / 100) * brushScale;
+      // Convert brush pixel radius -> world radius for spacing
+      const brushRadiusWorld = brushRadius * textureSettings.worldScale * brushScale;
+      const spacingDistance = Math.max(1e-6, brushRadiusWorld * (brushSpacing / 100));
       if (lastDabPosition && hit.point.distanceTo(lastDabPosition) < spacingDistance) return;
 
-      paintDabOnMesh(mesh, hit.point, worldNormal, hit.uv);
+      paintDab(hit as any);
       setLastDabPosition(hit.point.clone());
     };
 
     const handleMouseUp = () => {
       if (!isStroking) return;
-      activeStrokeMeshRef.current = null;
+      activeStrokeRootRef.current = null;
       endStroke();
     };
 
@@ -337,16 +461,16 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
     sourceAnchor,
     isStroking,
     raycast,
-    computeTangentFrame,
     beginStroke,
     endStroke,
     setTargetAnchor3D,
-    paintDabOnMesh,
+    paintDab,
     setLastDabPosition,
     lastDabPosition,
     brushRadius,
     brushSpacing,
     brushScale,
+    textureSettings.worldScale,
     gl,
   ]);
 
