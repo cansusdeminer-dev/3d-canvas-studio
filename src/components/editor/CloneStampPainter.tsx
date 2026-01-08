@@ -24,8 +24,10 @@ interface DebugInfo {
   sourceCenter: { x: number; y: number };
   targetAnchorUV: THREE.Vector2;
   uvDelta: { u: number; v: number };
+  uvBounds: { minU: number; minV: number; maxU: number; maxV: number };
   worldPos: THREE.Vector3;
 }
+
 let debugInfo: DebugInfo | null = null;
 
 type MeshPaintState = {
@@ -102,9 +104,11 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
   const { gl, camera } = useThree();
   const raycasterRef = useRef(new THREE.Raycaster());
   const mouseRef = useRef(new THREE.Vector2());
+  const lastHitUVRef = useRef<THREE.Vector2 | null>(null);
 
   const activeStrokeRootRef = useRef<THREE.Object3D | null>(null);
   const meshPaintMapRef = useRef<Map<string, MeshPaintState>>(new Map());
+
 
   const {
     isActive,
@@ -191,11 +195,13 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
         color: baseColor,
         map: texture,
         transparent: true,
-        side: THREE.DoubleSide,
+        // Paint should be visible on the outside only; DoubleSide makes it look like we're painting the “inside”.
+        side: THREE.FrontSide,
         roughness: baseMat?.roughness ?? 0.7,
         metalness: baseMat?.metalness ?? 0.3,
       });
     };
+
 
     const paintMaterials: THREE.MeshStandardMaterial[] = Array.isArray(originalMaterial)
       ? originalMaterial.map((m) => toPaintMaterial(m))
@@ -276,8 +282,8 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const paintState = ensureMeshPaintState(mesh);
       const { canvas, ctx } = paintState;
 
-      // ===== UV-BASED SOURCE SAMPLING (THE KEY FIX) =====
-      // UV delta from stroke start to current hit
+      // ===== UV-BASED SOURCE SAMPLING (continuous + anchor invariant) =====
+      // Work in UV coordinates: U right, V up.
       const duUV = hit.uv.x - targetAnchor3D.uv.x;
       const dvUV = hit.uv.y - targetAnchor3D.uv.y;
 
@@ -287,27 +293,18 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const duRot = cosA * duUV - sinA * dvUV;
       const dvRot = sinA * duUV + cosA * dvUV;
 
-      // Scale UV delta by source image size and inverse of brush scale
-      // This maps: moving 1 UV unit on target -> moving sourceImageSize pixels on source (adjusted by scale)
-      const sourceOffsetX = (duRot * sourceImageSize.width) / brushScale;
-      const sourceOffsetY = (dvRot * sourceImageSize.height) / brushScale;
+      // Convert UV delta -> source pixels.
+      // NOTE: V is “up” in UV, but “down” in image pixel space, hence the minus on Y.
+      const srcW = sourceImageSize.width;
+      const srcH = sourceImageSize.height;
 
       const sourceCenter = {
-        x: sourceAnchor.x + sourceOffsetX,
-        y: sourceAnchor.y + sourceOffsetY,
-      };
-
-      // Update debug info
-      debugInfo = {
-        hitUV: hit.uv.clone(),
-        sourceCenter,
-        targetAnchorUV: targetAnchor3D.uv.clone(),
-        uvDelta: { u: duUV, v: dvUV },
-        worldPos: hit.point.clone(),
+        x: sourceAnchor.x + (duRot * srcW) / brushScale,
+        y: sourceAnchor.y + (-dvRot * srcH) / brushScale,
       };
 
       // Map source-pixel brush radius to target texture pixels
-      const radiusPx = Math.max(1, brushRadius * brushScale * (canvas.width / sourceImageSize.width));
+      const radiusPx = Math.max(1, brushRadius * brushScale * (canvas.width / srcW));
 
       const cx = hit.uv.x * canvas.width;
       const cy = (1 - hit.uv.y) * canvas.height;
@@ -320,24 +317,36 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const w = Math.max(1, maxX - minX + 1);
       const h = Math.max(1, maxY - minY + 1);
 
+      // Update debug info (include dab UV bounds)
+      debugInfo = {
+        hitUV: hit.uv.clone(),
+        sourceCenter,
+        targetAnchorUV: targetAnchor3D.uv.clone(),
+        uvDelta: { u: duUV, v: dvUV },
+        uvBounds: {
+          minU: minX / canvas.width,
+          maxU: (maxX + 1) / canvas.width,
+          // canvas Y is “down”, UV V is “up”
+          minV: 1 - (maxY + 1) / canvas.height,
+          maxV: 1 - minY / canvas.height,
+        },
+        worldPos: hit.point.clone(),
+      };
+
       const img = ctx.getImageData(minX, minY, w, h);
       const data = img.data;
-
-      // Convert target texture pixels back to source pixels
-      const targetPxToSourcePxX = sourceImageSize.width / canvas.width;
-      const targetPxToSourcePxY = sourceImageSize.height / canvas.height;
 
       let paintedCount = 0;
 
       for (let yy = 0; yy < h; yy++) {
         const py = minY + yy + 0.5;
-        const dy = py - cy;
+        const dyPx = py - cy;
 
         for (let xx = 0; xx < w; xx++) {
           const px = minX + xx + 0.5;
-          const dx = px - cx;
+          const dxPx = px - cx;
 
-          const dist = Math.sqrt(dx * dx + dy * dy) / radiusPx;
+          const dist = Math.sqrt(dxPx * dxPx + dyPx * dyPx) / radiusPx;
           if (dist > 1) continue;
 
           let mask = 1;
@@ -345,8 +354,18 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
             mask = 1 - (dist - brushHardness) / Math.max(1e-6, 1 - brushHardness);
           }
 
-          const srcX = sourceCenter.x + dx * targetPxToSourcePxX;
-          const srcY = sourceCenter.y + dy * targetPxToSourcePxY;
+          // Local offset in target UV space (U right, V up)
+          const duLocal = dxPx / canvas.width;
+          const dvLocal = -dyPx / canvas.height;
+
+          // Apply brush rotation to the sampled patch too (not just the movement)
+          const duLocalRot = cosA * duLocal - sinA * dvLocal;
+          const dvLocalRot = sinA * duLocal + cosA * dvLocal;
+
+          // Convert local UV offset -> source pixels (+ scale)
+          const srcX = sourceCenter.x + (duLocalRot * srcW) / brushScale;
+          const srcY = sourceCenter.y + (-dvLocalRot * srcH) / brushScale;
+
           const src = sampleSourceColor(srcX, srcY);
           if (!src) continue;
 
@@ -418,10 +437,20 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       }
 
       const hits = raycast(e, paintableRoots);
+      const rayDir = raycasterRef.current.ray.direction;
       const hit = hits.find((h) => {
         const obj = h.object as any;
-        return obj?.isMesh && !!h.uv && !!h.face && (obj.geometry as THREE.BufferGeometry)?.attributes?.uv;
+        if (!obj?.isMesh || !h.uv || !h.face) return false;
+        if (!(obj.geometry as THREE.BufferGeometry)?.attributes?.uv) return false;
+
+        // Prefer front-faces so we don't “paint the inside” / opposite wall.
+        const mesh = obj as THREE.Mesh;
+        const worldNormal = (h.face as any).normal.clone();
+        const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+        worldNormal.applyMatrix3(normalMatrix).normalize();
+        return worldNormal.dot(rayDir) < 0;
       });
+
 
       if (!hit || !hit.uv || !hit.face) return;
 
@@ -453,6 +482,8 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       // Pass the anchor directly since store may not have updated yet
       paintDab(hit as any, newAnchor);
       setLastDabPosition(hit.point.clone());
+      lastHitUVRef.current = hit.uv.clone();
+
 
       console.log('CloneStamp: Stroke start', mesh.name || mesh.uuid);
     };
@@ -463,28 +494,58 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const root = activeStrokeRootRef.current;
       if (!root) return;
 
-      const hits = raycast(e, [root]);
-      const hit = hits.find((h) => {
-        const obj = h.object as any;
-        return obj?.isMesh && !!h.uv && !!h.face && (obj.geometry as THREE.BufferGeometry)?.attributes?.uv;
-      });
+       const hits = raycast(e, [root]);
+       const rayDir = raycasterRef.current.ray.direction;
+       const hit = hits.find((h) => {
+         const obj = h.object as any;
+         if (!obj?.isMesh || !h.uv || !h.face) return false;
+         if (!(obj.geometry as THREE.BufferGeometry)?.attributes?.uv) return false;
+
+         const mesh = obj as THREE.Mesh;
+         const worldNormal = (h.face as any).normal.clone();
+         const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+         worldNormal.applyMatrix3(normalMatrix).normalize();
+         return worldNormal.dot(rayDir) < 0;
+       });
+
 
       if (!hit || !hit.uv || !hit.face) return;
 
-      // Convert brush pixel radius -> world radius for spacing
-      const brushRadiusWorld = brushRadius * textureSettings.worldScale * brushScale;
-      const spacingDistance = Math.max(1e-6, brushRadiusWorld * (brushSpacing / 100));
-      if (lastDabPosition && hit.point.distanceTo(lastDabPosition) < spacingDistance) return;
+       // Convert brush pixel radius -> world radius for spacing
+       const brushRadiusWorld = brushRadius * textureSettings.worldScale * brushScale;
+       const spacingDistance = Math.max(1e-6, brushRadiusWorld * (brushSpacing / 100));
 
-      paintDab(hit as any, targetAnchor3D);
-      setLastDabPosition(hit.point.clone());
+       // If we move far in a single mouse event, fill the gap with evenly-spaced dabs
+       if (!lastDabPosition || !lastHitUVRef.current) {
+         paintDab(hit as any, targetAnchor3D);
+         setLastDabPosition(hit.point.clone());
+         lastHitUVRef.current = hit.uv.clone();
+         return;
+       }
+
+       const dist = hit.point.distanceTo(lastDabPosition);
+       if (dist < spacingDistance) return;
+
+       const steps = Math.max(1, Math.floor(dist / spacingDistance));
+       for (let i = 1; i <= steps; i++) {
+         const t = i / steps;
+         const p = lastDabPosition.clone().lerp(hit.point, t);
+         const uv = lastHitUVRef.current.clone().lerp(hit.uv, t);
+         paintDab({ ...(hit as any), point: p, uv } as any, targetAnchor3D);
+       }
+
+       setLastDabPosition(hit.point.clone());
+       lastHitUVRef.current = hit.uv.clone();
+
     };
 
-    const handleMouseUp = () => {
-      if (!isStroking) return;
-      activeStrokeRootRef.current = null;
-      endStroke();
-    };
+     const handleMouseUp = () => {
+       if (!isStroking) return;
+       activeStrokeRootRef.current = null;
+       lastHitUVRef.current = null;
+       endStroke();
+     };
+
 
     gl.domElement.addEventListener('mousedown', handleMouseDown);
     gl.domElement.addEventListener('mousemove', handleMouseMove);
@@ -540,14 +601,21 @@ function CloneStampDebugOverlay() {
       position={[displayInfo.worldPos.x, displayInfo.worldPos.y + 0.5, displayInfo.worldPos.z]}
       style={{ pointerEvents: 'none' }}
     >
-      <div className="bg-black/80 text-white text-xs p-2 rounded font-mono whitespace-nowrap">
+      <div className="bg-background/85 text-foreground text-xs p-2 rounded border border-border font-mono whitespace-nowrap">
         <div>hit.uv: ({displayInfo.hitUV.x.toFixed(3)}, {displayInfo.hitUV.y.toFixed(3)})</div>
         <div>anchor.uv: ({displayInfo.targetAnchorUV.x.toFixed(3)}, {displayInfo.targetAnchorUV.y.toFixed(3)})</div>
         <div>Δuv: ({displayInfo.uvDelta.u.toFixed(3)}, {displayInfo.uvDelta.v.toFixed(3)})</div>
-        <div className="text-green-400">srcCenter: ({displayInfo.sourceCenter.x.toFixed(1)}, {displayInfo.sourceCenter.y.toFixed(1)})</div>
-        {sourceAnchor && <div className="text-yellow-400">srcAnchor: ({sourceAnchor.x.toFixed(1)}, {sourceAnchor.y.toFixed(1)})</div>}
-        {sourceImageSize && <div className="text-blue-400">srcSize: {sourceImageSize.width}×{sourceImageSize.height}</div>}
+        <div>dab UV bounds:</div>
+        <div>
+          u[{displayInfo.uvBounds.minU.toFixed(3)}, {displayInfo.uvBounds.maxU.toFixed(3)}] v[{displayInfo.uvBounds.minV.toFixed(3)}, {displayInfo.uvBounds.maxV.toFixed(3)}]
+        </div>
+        <div className="text-primary">srcCenter: ({displayInfo.sourceCenter.x.toFixed(1)}, {displayInfo.sourceCenter.y.toFixed(1)})</div>
+        {sourceAnchor && (
+          <div className="text-muted-foreground">srcAnchor: ({sourceAnchor.x.toFixed(1)}, {sourceAnchor.y.toFixed(1)})</div>
+        )}
+        {sourceImageSize && <div className="text-muted-foreground">srcSize: {sourceImageSize.width}×{sourceImageSize.height}</div>}
       </div>
+
     </Html>
   );
 }
