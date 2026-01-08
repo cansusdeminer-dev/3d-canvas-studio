@@ -283,9 +283,9 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const { canvas, ctx } = paintState;
 
       // ===== UV-BASED SOURCE SAMPLING (continuous + anchor invariant) =====
-      // Work in UV coordinates: U right, V up.
-      const duUV = hit.uv.x - targetAnchor3D.uv.x;
-      const dvUV = hit.uv.y - targetAnchor3D.uv.y;
+      // Invert UV delta so brush movement feels natural (drag right → reveal right of source)
+      const duUV = -(hit.uv.x - targetAnchor3D.uv.x);
+      const dvUV = -(hit.uv.y - targetAnchor3D.uv.y);
 
       // Apply rotation in UV space: R(-θ)
       const cosA = Math.cos(-brushRotation);
@@ -300,7 +300,7 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
 
       const sourceCenter = {
         x: sourceAnchor.x + (duRot * srcW) / brushScale,
-        y: sourceAnchor.y + (-dvRot * srcH) / brushScale,
+        y: sourceAnchor.y + (dvRot * srcH) / brushScale,
       };
 
       // Map source-pixel brush radius to target texture pixels
@@ -354,17 +354,18 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
             mask = 1 - (dist - brushHardness) / Math.max(1e-6, 1 - brushHardness);
           }
 
-          // Local offset in target UV space (U right, V up)
-          const duLocal = dxPx / canvas.width;
-          const dvLocal = -dyPx / canvas.height;
+          // Local offset from dab center (inverted to match stroke direction)
+          const duLocal = -dxPx / canvas.width;
+          const dvLocal = -(-dyPx / canvas.height);
 
-          // Apply brush rotation to the sampled patch too (not just the movement)
+          // Apply brush rotation to the sampled patch too
           const duLocalRot = cosA * duLocal - sinA * dvLocal;
           const dvLocalRot = sinA * duLocal + cosA * dvLocal;
 
-          // Convert local UV offset -> source pixels (+ scale)
+          // Convert local UV offset -> source pixels
           const srcX = sourceCenter.x + (duLocalRot * srcW) / brushScale;
-          const srcY = sourceCenter.y + (-dvLocalRot * srcH) / brushScale;
+          const srcY = sourceCenter.y + (dvLocalRot * srcH) / brushScale;
+
 
           const src = sampleSourceColor(srcX, srcY);
           if (!src) continue;
