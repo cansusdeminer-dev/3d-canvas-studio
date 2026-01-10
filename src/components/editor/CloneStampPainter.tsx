@@ -123,7 +123,6 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
     brushSpacing,
     brushScale,
     textureSettings,
-    getSourceSamplePosition3D,
     isStroking,
     lastDabPosition,
     targetAnchor3D,
@@ -196,11 +195,9 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
     const originalMaterial = mesh.material as THREE.Material | THREE.Material[];
 
     const toPaintMaterial = (baseMat: any) => {
-      // IMPORTANT: material.color multiplies the texture map.
-      // If we keep the original object color (e.g. green), the stamped texture gets tinted.
-      // For clone-stamp we want the source colors to come through unmodified.
+      const baseColor = baseMat?.color ? baseMat.color : new THREE.Color(0xffffff);
       return new THREE.MeshStandardMaterial({
-        color: new THREE.Color(0xffffff),
+        color: baseColor,
         map: texture,
         // We render the paint as an opaque albedo map (alpha handled in the 2D compositing step).
         transparent: false,
@@ -291,24 +288,25 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const paintState = ensureMeshPaintState(mesh);
       const { canvas, ctx } = paintState;
 
-      // ===== SOURCE SAMPLING (cursor/world-driven) =====
-      // We compute the source-center using the store's projection math.
-      // This makes motion consistent across cube faces (no per-face mirroring due to UV island orientation).
-      const worldNormal = (hit.face as any).normal.clone();
-      const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
-      worldNormal.applyMatrix3(normalMatrix).normalize();
+      // ===== UV-BASED SOURCE SAMPLING (continuous + anchor invariant) =====
+      // Work in UV coordinates: U right, V up.
+      const duUV = hit.uv.x - targetAnchor3D.uv.x;
+      const dvUV = hit.uv.y - targetAnchor3D.uv.y;
 
-      const sampled = getSourceSamplePosition3D(hit.point, worldNormal, hit.uv);
-      if (!sampled) return;
+      // Apply rotation in UV space: R(-θ)
+      const cosA = Math.cos(-brushRotation);
+      const sinA = Math.sin(-brushRotation);
+      const duRot = cosA * duUV - sinA * dvUV;
+      const dvRot = sinA * duUV + cosA * dvUV;
 
+      // Convert UV delta -> source pixels.
+      // UV V is “up”, but image Y is “down”, hence the minus on Y.
       const srcW = sourceImageSize.width;
       const srcH = sourceImageSize.height;
 
-      const wrap = (v: number, max: number) => ((v % max) + max) % max;
-
       const sourceCenter = {
-        x: textureSettings.tiling ? wrap(sampled.x, srcW) : sampled.x,
-        y: textureSettings.tiling ? wrap(sampled.y, srcH) : sampled.y,
+        x: sourceAnchor.x + (duRot * srcW) / brushScale,
+        y: sourceAnchor.y + (-dvRot * srcH) / brushScale,
       };
 
       // Map source-pixel brush radius to target texture pixels
@@ -324,10 +322,6 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
 
       const w = Math.max(1, maxX - minX + 1);
       const h = Math.max(1, maxY - minY + 1);
-
-      // For debug overlay we still show UV deltas (useful to spot flipped UV islands)
-      const duUV = hit.uv.x - targetAnchor3D.uv.x;
-      const dvUV = hit.uv.y - targetAnchor3D.uv.y;
 
       // Update debug info (include dab UV bounds)
       debugInfo = {
@@ -347,10 +341,6 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
 
       const img = ctx.getImageData(minX, minY, w, h);
       const data = img.data;
-
-      // Rotation for sampling the source patch (rotation affects mapping, not the anchors)
-      const cosA = Math.cos(-brushRotation);
-      const sinA = Math.sin(-brushRotation);
 
       let paintedCount = 0;
 

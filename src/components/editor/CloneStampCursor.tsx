@@ -3,14 +3,13 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { useCloneStampStore } from '@/hooks/useCloneStampStore';
 import * as THREE from 'three';
 
-// Create a texture from the source image centered on a provided sample center.
-// (We keep it lightweight; "teleport" behavior is handled by wrapping the center when tiling is enabled.)
-function useSourcePreviewTexture(center: { x: number; y: number } | null) {
-  const { sourceImageUrl, brushRadius, brushScale, textureSettings, sourceImageSize } = useCloneStampStore();
+// Create a texture from the source image centered on the anchor
+function useSourcePreviewTexture() {
+  const { sourceImageUrl, sourceAnchor, brushRadius, brushScale, textureSettings } = useCloneStampStore();
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
-
+  
   // Load image once
   useEffect(() => {
     if (!sourceImageUrl) {
@@ -18,7 +17,7 @@ function useSourcePreviewTexture(center: { x: number; y: number } | null) {
       imageRef.current = null;
       return;
     }
-
+    
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
@@ -27,19 +26,18 @@ function useSourcePreviewTexture(center: { x: number; y: number } | null) {
       updateTexture(img);
     };
     img.src = sourceImageUrl;
-
+    
     return () => {
       imageRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceImageUrl]);
-
+  
   const updateTexture = (img: HTMLImageElement) => {
-    if (!center || !sourceImageSize) {
+    if (!sourceAnchor) {
       setTexture(null);
       return;
     }
-
+    
     const size = 256;
     let canvas = canvasRef.current;
     if (!canvas) {
@@ -48,55 +46,44 @@ function useSourcePreviewTexture(center: { x: number; y: number } | null) {
       canvas.height = size;
       canvasRef.current = canvas;
     }
-
+    
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-
-    // Wrap the center when tiling is enabled (so it "teleports" at edges)
-    const wrap = (v: number, max: number) => ((v % max) + max) % max;
-    const c = textureSettings.tiling
-      ? { x: wrap(center.x, sourceImageSize.width), y: wrap(center.y, sourceImageSize.height) }
-      : center;
-
+    
     ctx.clearRect(0, 0, size, size);
-
+    
     // Create circular clip
     ctx.save();
     ctx.beginPath();
     ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
     ctx.closePath();
     ctx.clip();
-
+    
     // Calculate sample region based on brush settings
     const sampleRadius = brushRadius / textureSettings.worldScale;
-    const sx = c.x - sampleRadius;
-    const sy = c.y - sampleRadius;
+    const sx = sourceAnchor.x - sampleRadius;
+    const sy = sourceAnchor.y - sampleRadius;
     const sw = sampleRadius * 2;
     const sh = sampleRadius * 2;
-
+    
     ctx.drawImage(img, sx, sy, sw, sh, 0, 0, size, size);
     ctx.restore();
-
+    
     // Create or update texture
-    if (texture && texture instanceof THREE.CanvasTexture) {
-      texture.needsUpdate = true;
-    } else {
-      const tex = new THREE.CanvasTexture(canvas);
-      tex.needsUpdate = true;
-      setTexture(tex);
-    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.needsUpdate = true;
+    setTexture(tex);
   };
-
-  // Update when center or brush settings change
+  
+  // Update when anchor or brush settings change
   useEffect(() => {
-    if (imageRef.current && center && sourceImageSize) {
+    if (imageRef.current && sourceAnchor) {
       updateTexture(imageRef.current);
     } else {
       setTexture(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [center?.x, center?.y, sourceImageSize?.width, sourceImageSize?.height, brushRadius, brushScale, textureSettings.worldScale, textureSettings.tiling]);
-
+  }, [sourceAnchor, brushRadius, brushScale, textureSettings.worldScale]);
+  
   return texture;
 }
 
@@ -108,22 +95,15 @@ export function CloneStampCursor() {
   
   const {
     isActive,
-    isStroking,
     sourceAnchor,
-    targetAnchor3D,
-    getSourceSamplePosition3D,
     brushRadius,
     brushScale,
     textureSettings,
     surfaceSettings
   } = useCloneStampStore();
-
-  const [previewCenter, setPreviewCenter] = useState<{ x: number; y: number } | null>(
-    sourceAnchor ? { x: sourceAnchor.x, y: sourceAnchor.y } : null
-  );
-
-  const previewTexture = useSourcePreviewTexture(previewCenter);
-
+  
+  const previewTexture = useSourcePreviewTexture();
+  
   // Smoothed position/normal
   const smoothedPosition = useRef(new THREE.Vector3());
   const smoothedNormal = useRef(new THREE.Vector3(0, 1, 0));
@@ -174,24 +154,6 @@ export function CloneStampCursor() {
       const worldNormal = hit.face.normal.clone();
       const normalMatrix = new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld);
       worldNormal.applyMatrix3(normalMatrix).normalize();
-
-      // Drive the 2D source preview center from the same math used by the painter.
-      // This makes the preview "move" as you move across the surface.
-      if (isStroking && sourceAnchor && targetAnchor3D && hit.uv) {
-        const sampled = getSourceSamplePosition3D(hit.point, worldNormal, hit.uv);
-        if (sampled) {
-          const prev = previewCenter;
-          if (!prev || Math.abs(prev.x - sampled.x) > 0.5 || Math.abs(prev.y - sampled.y) > 0.5) {
-            setPreviewCenter({ x: sampled.x, y: sampled.y });
-          }
-        }
-      } else if (sourceAnchor) {
-        const prev = previewCenter;
-        const next = { x: sourceAnchor.x, y: sourceAnchor.y };
-        if (!prev || prev.x !== next.x || prev.y !== next.y) setPreviewCenter(next);
-      } else if (previewCenter !== null) {
-        setPreviewCenter(null);
-      }
       
       if (!isInitialized.current) {
         smoothedPosition.current.copy(hit.point);
