@@ -177,7 +177,12 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
     canvas.height = resolution;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('CloneStamp: Failed to create 2D ctx');
+
+    // Keep meshes visible by starting with an OPAQUE white paint layer.
+    // (A transparent canvas + material.transparent=true makes the whole mesh look invisible.)
     ctx.clearRect(0, 0, resolution, resolution);
+    ctx.fillStyle = 'rgba(255,255,255,1)';
+    ctx.fillRect(0, 0, resolution, resolution);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.needsUpdate = true;
@@ -194,14 +199,15 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       return new THREE.MeshStandardMaterial({
         color: baseColor,
         map: texture,
-        transparent: true,
+        // We render the paint as an opaque albedo map (alpha handled in the 2D compositing step).
+        transparent: false,
+        opacity: 1,
         // Paint should be visible on the outside only; DoubleSide makes it look like we're painting the “inside”.
         side: THREE.FrontSide,
         roughness: baseMat?.roughness ?? 0.7,
         metalness: baseMat?.metalness ?? 0.3,
       });
     };
-
 
     const paintMaterials: THREE.MeshStandardMaterial[] = Array.isArray(originalMaterial)
       ? originalMaterial.map((m) => toPaintMaterial(m))
@@ -283,9 +289,9 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const { canvas, ctx } = paintState;
 
       // ===== UV-BASED SOURCE SAMPLING (continuous + anchor invariant) =====
-      // Invert UV delta so brush movement feels natural (drag right → reveal right of source)
-      const duUV = -(hit.uv.x - targetAnchor3D.uv.x);
-      const dvUV = -(hit.uv.y - targetAnchor3D.uv.y);
+      // Work in UV coordinates: U right, V up.
+      const duUV = hit.uv.x - targetAnchor3D.uv.x;
+      const dvUV = hit.uv.y - targetAnchor3D.uv.y;
 
       // Apply rotation in UV space: R(-θ)
       const cosA = Math.cos(-brushRotation);
@@ -294,13 +300,13 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const dvRot = sinA * duUV + cosA * dvUV;
 
       // Convert UV delta -> source pixels.
-      // NOTE: V is “up” in UV, but “down” in image pixel space, hence the minus on Y.
+      // UV V is “up”, but image Y is “down”, hence the minus on Y.
       const srcW = sourceImageSize.width;
       const srcH = sourceImageSize.height;
 
       const sourceCenter = {
         x: sourceAnchor.x + (duRot * srcW) / brushScale,
-        y: sourceAnchor.y + (dvRot * srcH) / brushScale,
+        y: sourceAnchor.y + (-dvRot * srcH) / brushScale,
       };
 
       // Map source-pixel brush radius to target texture pixels
@@ -354,18 +360,17 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
             mask = 1 - (dist - brushHardness) / Math.max(1e-6, 1 - brushHardness);
           }
 
-          // Local offset from dab center (inverted to match stroke direction)
-          const duLocal = -dxPx / canvas.width;
-          const dvLocal = -(-dyPx / canvas.height);
+          // Local offset in target UV space (U right, V up)
+          const duLocal = dxPx / canvas.width;
+          const dvLocal = -dyPx / canvas.height;
 
           // Apply brush rotation to the sampled patch too
           const duLocalRot = cosA * duLocal - sinA * dvLocal;
           const dvLocalRot = sinA * duLocal + cosA * dvLocal;
 
-          // Convert local UV offset -> source pixels
+          // Convert local UV offset -> source pixels (+ scale)
           const srcX = sourceCenter.x + (duLocalRot * srcW) / brushScale;
-          const srcY = sourceCenter.y + (dvLocalRot * srcH) / brushScale;
-
+          const srcY = sourceCenter.y + (-dvLocalRot * srcH) / brushScale;
 
           const src = sampleSourceColor(srcX, srcY);
           if (!src) continue;
@@ -379,7 +384,7 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
           const dstB = data[idx + 2];
           const dstA = data[idx + 3] / 255;
 
-          // Normal alpha compositing
+          // Normal alpha compositing (into an opaque canvas)
           const outA = srcA + dstA * (1 - srcA);
           const outR = (src[0] * srcA + dstR * dstA * (1 - srcA)) / Math.max(1e-6, outA);
           const outG = (src[1] * srcA + dstG * dstA * (1 - srcA)) / Math.max(1e-6, outA);
@@ -388,7 +393,7 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
           data[idx] = Math.round(outR);
           data[idx + 1] = Math.round(outG);
           data[idx + 2] = Math.round(outB);
-          data[idx + 3] = Math.round(outA * 255);
+          data[idx + 3] = 255; // keep fully opaque so the mesh never “disappears”
           paintedCount++;
         }
       }
