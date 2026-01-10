@@ -108,7 +108,7 @@ function Scene() {
       <SceneObjects onMissed={handleMissed} />
       
       {/* 3D Cursor System */}
-      {!cloneStampActive && <Cursor3D />}
+      <Cursor3D />
       <CursorControls />
       <SculptBrush />
       <CloneStampPainterScene />
