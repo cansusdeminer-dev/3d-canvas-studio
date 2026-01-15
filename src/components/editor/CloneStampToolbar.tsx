@@ -22,6 +22,7 @@ import {
   Move, Blend, Undo2, Redo2
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { PaintLayerPanel } from './PaintLayerPanel';
 
 export function CloneStampToolbar() {
   const {
@@ -402,6 +403,9 @@ export function CloneStampToolbar() {
           </Tabs>
         </PopoverContent>
       </Popover>
+      
+      {/* Paint Layers Panel */}
+      <PaintLayerPanel />
       
       <div className="h-4 w-px bg-border" />
       
