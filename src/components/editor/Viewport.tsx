@@ -19,6 +19,7 @@ import { CursorControls } from './CursorControls';
 import { SculptBrush } from './SculptBrush';
 import { CloneStampPainterScene } from './CloneStampPainter';
 import { CloneStampCursor } from './CloneStampCursor';
+import { CloneStampPreviewDecal } from './CloneStampPreviewDecal';
 import * as THREE from 'three';
 
 function Scene() {
@@ -113,6 +114,7 @@ function Scene() {
       <SculptBrush />
       <CloneStampPainterScene />
       {cloneStampActive && <CloneStampCursor />}
+      {cloneStampActive && <CloneStampPreviewDecal />}
       
       {selectedObject && transformMode !== 'select' && (
         <TransformControls

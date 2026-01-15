@@ -1,7 +1,9 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useThree, useFrame } from '@react-three/fiber';
 import { useCloneStampStore } from '@/hooks/useCloneStampStore';
+import { usePaintLayerStore } from '@/hooks/usePaintLayerStore';
 import { useEditorStore } from '@/hooks/useEditorStore';
+import { getCachedSeamInfo, calculateSeamBlendWeight, SeamInfo } from '@/lib/seamDetection';
 import * as THREE from 'three';
 import { Html } from '@react-three/drei';
 
@@ -13,30 +15,20 @@ interface CloneStampPainterProps {
   paintTargets: PaintTarget[];
 }
 
-// Shared source image data
-let sourceCanvas: HTMLCanvasElement | null = null;
-let sourceCtx: CanvasRenderingContext2D | null = null;
-let sourceImageData: ImageData | null = null;
-
 // Debug overlay state (module-level for persistence)
 interface DebugInfo {
-  hitUV: THREE.Vector2;
+  hitPoint: THREE.Vector3;
+  hitNormal: THREE.Vector3;
+  tangent: THREE.Vector3;
+  bitangent: THREE.Vector3;
+  tangentDelta: { u: number; v: number };
   sourceCenter: { x: number; y: number };
-  targetAnchorUV: THREE.Vector2;
-  uvDelta: { u: number; v: number };
-  uvBounds: { minU: number; minV: number; maxU: number; maxV: number };
-  worldPos: THREE.Vector3;
+  flipU: boolean;
+  flipV: boolean;
+  seamBlend: number;
 }
 
 let debugInfo: DebugInfo | null = null;
-
-type MeshPaintState = {
-  canvas: HTMLCanvasElement;
-  ctx: CanvasRenderingContext2D;
-  texture: THREE.CanvasTexture;
-  paintMaterials: THREE.MeshStandardMaterial[];
-  originalMaterial: THREE.Material | THREE.Material[];
-};
 
 function isDescendant(root: THREE.Object3D, obj: THREE.Object3D): boolean {
   let cur: THREE.Object3D | null = obj;
@@ -47,56 +39,81 @@ function isDescendant(root: THREE.Object3D, obj: THREE.Object3D): boolean {
   return false;
 }
 
-function computeTriangleTangentFrame(mesh: THREE.Mesh, face: THREE.Face, worldNormal: THREE.Vector3) {
+// Compute tangent frame from triangle geometry (not UV-based, purely geometric)
+function computeGeometricTangentFrame(mesh: THREE.Mesh, face: THREE.Face, worldNormal: THREE.Vector3) {
   const geom = mesh.geometry as THREE.BufferGeometry;
   const posAttr = geom.attributes.position as THREE.BufferAttribute | undefined;
-  const uvAttr = geom.attributes.uv as THREE.BufferAttribute | undefined;
-  if (!posAttr || !uvAttr) {
-    // fallback
+  
+  if (!posAttr) {
+    // Fallback: create frame from world up
     let up = new THREE.Vector3(0, 1, 0);
     if (Math.abs(worldNormal.dot(up)) > 0.9) up = new THREE.Vector3(1, 0, 0);
     const tangent = new THREE.Vector3().crossVectors(up, worldNormal).normalize();
     const bitangent = new THREE.Vector3().crossVectors(worldNormal, tangent).normalize();
     return { tangent, bitangent };
   }
+  
+  // Get world positions of triangle vertices
+  const getPos = (i: number) => new THREE.Vector3(
+    posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)
+  ).applyMatrix4(mesh.matrixWorld);
+  
+  const p0 = getPos(face.a);
+  const p1 = getPos(face.b);
+  const p2 = getPos(face.c);
+  
+  // Edge vectors in world space
+  const edge1 = p1.clone().sub(p0);
+  const edge2 = p2.clone().sub(p0);
+  
+  // Project edge1 onto tangent plane (perpendicular to normal)
+  const tangent = edge1.clone().sub(worldNormal.clone().multiplyScalar(edge1.dot(worldNormal))).normalize();
+  
+  // Bitangent is perpendicular to both normal and tangent
+  const bitangent = new THREE.Vector3().crossVectors(worldNormal, tangent).normalize();
+  
+  return { tangent, bitangent };
+}
 
-  const getPos = (i: number) => new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(mesh.matrixWorld);
+// Compute UV-derived tangent frame for proper texture mapping
+function computeUVTangentFrame(mesh: THREE.Mesh, face: THREE.Face, worldNormal: THREE.Vector3) {
+  const geom = mesh.geometry as THREE.BufferGeometry;
+  const posAttr = geom.attributes.position as THREE.BufferAttribute | undefined;
+  const uvAttr = geom.attributes.uv as THREE.BufferAttribute | undefined;
+  
+  if (!posAttr || !uvAttr) {
+    return computeGeometricTangentFrame(mesh, face, worldNormal);
+  }
+  
+  const getPos = (i: number) => new THREE.Vector3(
+    posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)
+  ).applyMatrix4(mesh.matrixWorld);
+  
   const getUV = (i: number) => new THREE.Vector2(uvAttr.getX(i), uvAttr.getY(i));
-
-  const i0 = face.a;
-  const i1 = face.b;
-  const i2 = face.c;
-
-  const p0 = getPos(i0);
-  const p1 = getPos(i1);
-  const p2 = getPos(i2);
-
-  const uv0 = getUV(i0);
-  const uv1 = getUV(i1);
-  const uv2 = getUV(i2);
-
+  
+  const p0 = getPos(face.a);
+  const p1 = getPos(face.b);
+  const p2 = getPos(face.c);
+  
+  const uv0 = getUV(face.a);
+  const uv1 = getUV(face.b);
+  const uv2 = getUV(face.c);
+  
   const dp1 = p1.clone().sub(p0);
   const dp2 = p2.clone().sub(p0);
   const duv1 = uv1.clone().sub(uv0);
   const duv2 = uv2.clone().sub(uv0);
-
+  
   const denom = duv1.x * duv2.y - duv1.y * duv2.x;
   if (Math.abs(denom) < 1e-8) {
-    let up = new THREE.Vector3(0, 1, 0);
-    if (Math.abs(worldNormal.dot(up)) > 0.9) up = new THREE.Vector3(1, 0, 0);
-    const tangent = new THREE.Vector3().crossVectors(up, worldNormal).normalize();
-    const bitangent = new THREE.Vector3().crossVectors(worldNormal, tangent).normalize();
-    return { tangent, bitangent };
+    return computeGeometricTangentFrame(mesh, face, worldNormal);
   }
-
+  
   const r = 1 / denom;
-
   const tangent = dp1.clone().multiplyScalar(duv2.y).sub(dp2.clone().multiplyScalar(duv1.y)).multiplyScalar(r);
-  // Orthonormalize tangent
   tangent.sub(worldNormal.clone().multiplyScalar(worldNormal.dot(tangent))).normalize();
-
   const bitangent = new THREE.Vector3().crossVectors(worldNormal, tangent).normalize();
-
+  
   return { tangent, bitangent };
 }
 
@@ -104,12 +121,24 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
   const { gl, camera } = useThree();
   const raycasterRef = useRef(new THREE.Raycaster());
   const mouseRef = useRef(new THREE.Vector2());
-  const lastHitUVRef = useRef<THREE.Vector2 | null>(null);
-
+  
+  // Tangent-frame stroke state
+  const anchorPointRef = useRef<THREE.Vector3 | null>(null);
+  const anchorTangentRef = useRef<THREE.Vector3 | null>(null);
+  const anchorBitangentRef = useRef<THREE.Vector3 | null>(null);
+  const anchorNormalRef = useRef<THREE.Vector3 | null>(null);
+  
   const activeStrokeRootRef = useRef<THREE.Object3D | null>(null);
-  const meshPaintMapRef = useRef<Map<string, MeshPaintState>>(new Map());
-
-
+  const lastDabWorldPosRef = useRef<THREE.Vector3 | null>(null);
+  
+  // Source image data
+  const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sourceCtxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const sourceImageDataRef = useRef<ImageData | null>(null);
+  
+  // Seam info cache per mesh
+  const seamInfoCacheRef = useRef<Map<string, SeamInfo>>(new Map());
+  
   const {
     isActive,
     mode,
@@ -123,109 +152,62 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
     brushSpacing,
     brushScale,
     textureSettings,
+    surfaceSettings,
     isStroking,
     lastDabPosition,
-    targetAnchor3D,
-    setTargetAnchor3D,
     setLastDabPosition,
     beginStroke,
     endStroke,
   } = useCloneStampStore();
+  
+  const { createLayer, getLayer, getFlipSettings, autoDetectFlip } = usePaintLayerStore();
 
   // Load source image
   useEffect(() => {
     if (!sourceImageUrl || !sourceImageSize) {
-      sourceCanvas = null;
-      sourceCtx = null;
-      sourceImageData = null;
+      sourceCanvasRef.current = null;
+      sourceCtxRef.current = null;
+      sourceImageDataRef.current = null;
       return;
     }
 
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
-      sourceCanvas = document.createElement('canvas');
-      sourceCanvas.width = sourceImageSize.width;
-      sourceCanvas.height = sourceImageSize.height;
-      sourceCtx = sourceCanvas.getContext('2d');
-      if (sourceCtx) {
-        sourceCtx.drawImage(img, 0, 0);
-        sourceImageData = sourceCtx.getImageData(0, 0, sourceImageSize.width, sourceImageSize.height);
+      const canvas = document.createElement('canvas');
+      canvas.width = sourceImageSize.width;
+      canvas.height = sourceImageSize.height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0);
+        sourceCanvasRef.current = canvas;
+        sourceCtxRef.current = ctx;
+        sourceImageDataRef.current = ctx.getImageData(0, 0, sourceImageSize.width, sourceImageSize.height);
         console.log('CloneStamp: Source image loaded', sourceImageSize.width, 'x', sourceImageSize.height);
       }
-    };
-    img.onerror = () => {
-      console.error('CloneStamp: Failed to load source image');
     };
     img.src = sourceImageUrl;
 
     return () => {
-      sourceCanvas = null;
-      sourceCtx = null;
-      sourceImageData = null;
+      sourceCanvasRef.current = null;
+      sourceCtxRef.current = null;
+      sourceImageDataRef.current = null;
     };
   }, [sourceImageUrl, sourceImageSize]);
 
-  const ensureMeshPaintState = useCallback((mesh: THREE.Mesh) => {
-    const key = mesh.uuid;
-    const existing = meshPaintMapRef.current.get(key);
-    if (existing) return existing;
-
-    const resolution = 2048;
-    const canvas = document.createElement('canvas');
-    canvas.width = resolution;
-    canvas.height = resolution;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('CloneStamp: Failed to create 2D ctx');
-
-    // Keep meshes visible by starting with an OPAQUE white paint layer.
-    // (A transparent canvas + material.transparent=true makes the whole mesh look invisible.)
-    ctx.clearRect(0, 0, resolution, resolution);
-    ctx.fillStyle = 'rgba(255,255,255,1)';
-    ctx.fillRect(0, 0, resolution, resolution);
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.needsUpdate = true;
-    texture.flipY = false;
-    texture.minFilter = THREE.LinearFilter;
-    texture.magFilter = THREE.LinearFilter;
-    texture.wrapS = THREE.ClampToEdgeWrapping;
-    texture.wrapT = THREE.ClampToEdgeWrapping;
-
-    const originalMaterial = mesh.material as THREE.Material | THREE.Material[];
-
-    const toPaintMaterial = (baseMat: any) => {
-      const baseColor = baseMat?.color ? baseMat.color : new THREE.Color(0xffffff);
-      return new THREE.MeshStandardMaterial({
-        color: baseColor,
-        map: texture,
-        // We render the paint as an opaque albedo map (alpha handled in the 2D compositing step).
-        transparent: false,
-        opacity: 1,
-        // Paint should be visible on the outside only; DoubleSide makes it look like we're painting the “inside”.
-        side: THREE.FrontSide,
-        roughness: baseMat?.roughness ?? 0.7,
-        metalness: baseMat?.metalness ?? 0.3,
-      });
-    };
-
-    const paintMaterials: THREE.MeshStandardMaterial[] = Array.isArray(originalMaterial)
-      ? originalMaterial.map((m) => toPaintMaterial(m))
-      : [toPaintMaterial(originalMaterial)];
-
-    mesh.material = Array.isArray(originalMaterial) ? paintMaterials : paintMaterials[0];
-
-    const state: MeshPaintState = { canvas, ctx, texture, paintMaterials, originalMaterial };
-    meshPaintMapRef.current.set(key, state);
-
-    console.log('CloneStamp: Paint texture attached to mesh', mesh.name || mesh.uuid);
-
-    return state;
-  }, []);
+  // Get or create paint layer for mesh
+  const ensurePaintLayer = useCallback((mesh: THREE.Mesh) => {
+    let layer = getLayer(mesh.uuid);
+    if (!layer) {
+      layer = createLayer(mesh);
+    }
+    return layer;
+  }, [getLayer, createLayer]);
 
   // Bilinear sample from source
   const sampleSourceColor = useCallback(
     (x: number, y: number): [number, number, number, number] | null => {
+      const sourceImageData = sourceImageDataRef.current;
       if (!sourceImageData || !sourceImageSize) return null;
 
       const { tiling } = textureSettings;
@@ -251,10 +233,10 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const getPixel = (ix: number, iy: number): [number, number, number, number] => {
         const idx = (iy * sourceImageSize.width + ix) * 4;
         return [
-          sourceImageData!.data[idx],
-          sourceImageData!.data[idx + 1],
-          sourceImageData!.data[idx + 2],
-          sourceImageData!.data[idx + 3],
+          sourceImageData.data[idx],
+          sourceImageData.data[idx + 1],
+          sourceImageData.data[idx + 2],
+          sourceImageData.data[idx + 3],
         ];
       };
 
@@ -273,11 +255,12 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
     [sourceImageSize, textureSettings]
   );
 
+  // CORE: Paint a dab using TANGENT FRAME instead of UVs
   const paintDab = useCallback(
-    (hit: THREE.Intersection<THREE.Object3D>, targetAnchor3D: { uv: THREE.Vector2 } | null) => {
-      if (!sourceAnchor || !sourceImageData || !sourceImageSize) return;
+    (hit: THREE.Intersection<THREE.Object3D>) => {
+      if (!sourceAnchor || !sourceImageDataRef.current || !sourceImageSize) return;
       if (!hit.uv || !hit.face) return;
-      if (!targetAnchor3D) return;
+      if (!anchorPointRef.current || !anchorTangentRef.current || !anchorBitangentRef.current) return;
 
       const mesh = hit.object as THREE.Mesh;
       if (!mesh?.isMesh) return;
@@ -285,33 +268,50 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const geom = mesh.geometry as THREE.BufferGeometry;
       if (!geom?.attributes?.uv) return;
 
-      const paintState = ensureMeshPaintState(mesh);
-      const { canvas, ctx } = paintState;
+      const layer = ensurePaintLayer(mesh);
+      const { canvas, ctx, texture } = layer;
 
-      // ===== UV-BASED SOURCE SAMPLING (continuous + anchor invariant) =====
-      // Work in UV coordinates: U right, V up.
-      const duUV = hit.uv.x - targetAnchor3D.uv.x;
-      const dvUV = hit.uv.y - targetAnchor3D.uv.y;
+      // Get flip settings for this mesh
+      const flipSettings = getFlipSettings(mesh.uuid);
+      
+      // Get seam info for blending
+      let seamInfo = seamInfoCacheRef.current.get(mesh.uuid);
+      if (!seamInfo) {
+        seamInfo = getCachedSeamInfo(geom);
+        seamInfoCacheRef.current.set(mesh.uuid, seamInfo);
+      }
 
-      // Apply rotation in UV space: R(-θ)
+      // ===== TANGENT-FRAME BASED SOURCE SAMPLING =====
+      // Delta from stroke anchor in world space
+      const delta = hit.point.clone().sub(anchorPointRef.current);
+      
+      // Project delta onto anchor's tangent plane
+      let du = delta.dot(anchorTangentRef.current);
+      let dv = delta.dot(anchorBitangentRef.current);
+      
+      // Apply flip settings
+      if (flipSettings.flipU) du = -du;
+      if (flipSettings.flipV) dv = -dv;
+
+      // Apply rotation in tangent space: R(-θ)
       const cosA = Math.cos(-brushRotation);
       const sinA = Math.sin(-brushRotation);
-      const duRot = cosA * duUV - sinA * dvUV;
-      const dvRot = sinA * duUV + cosA * dvUV;
+      const duRot = cosA * du - sinA * dv;
+      const dvRot = sinA * du + cosA * dv;
 
-      // Convert UV delta -> source pixels.
-      // UV V is “up”, but image Y is “down”, hence the minus on Y.
-      const srcW = sourceImageSize.width;
-      const srcH = sourceImageSize.height;
-
+      // Convert world-space offset to source pixels
+      // textureSettings.worldScale is world units per pixel
+      const pixelsPerUnit = textureSettings.worldScale > 0 ? 1 / textureSettings.worldScale : 1000;
+      
       const sourceCenter = {
-        x: sourceAnchor.x + (duRot * srcW) / brushScale,
-        y: sourceAnchor.y + (-dvRot * srcH) / brushScale,
+        x: sourceAnchor.x + (duRot * pixelsPerUnit) / brushScale,
+        y: sourceAnchor.y + (-dvRot * pixelsPerUnit) / brushScale, // Y flipped for image coords
       };
 
-      // Map source-pixel brush radius to target texture pixels
-      const radiusPx = Math.max(1, brushRadius * brushScale * (canvas.width / srcW));
+      // Map brush radius to target texture pixels
+      const radiusPx = Math.max(1, brushRadius * brushScale * (canvas.width / sourceImageSize.width));
 
+      // UV position for painting on canvas
       const cx = hit.uv.x * canvas.width;
       const cy = (1 - hit.uv.y) * canvas.height;
 
@@ -323,20 +323,25 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const w = Math.max(1, maxX - minX + 1);
       const h = Math.max(1, maxY - minY + 1);
 
-      // Update debug info (include dab UV bounds)
+      // Calculate seam blend weight at this UV position
+      const seamBlendWeight = calculateSeamBlendWeight(
+        hit.uv,
+        seamInfo,
+        surfaceSettings.seamBlendRadius,
+        canvas.width
+      );
+
+      // Update debug info
       debugInfo = {
-        hitUV: hit.uv.clone(),
+        hitPoint: hit.point.clone(),
+        hitNormal: anchorNormalRef.current?.clone() || new THREE.Vector3(0, 1, 0),
+        tangent: anchorTangentRef.current.clone(),
+        bitangent: anchorBitangentRef.current.clone(),
+        tangentDelta: { u: du, v: dv },
         sourceCenter,
-        targetAnchorUV: targetAnchor3D.uv.clone(),
-        uvDelta: { u: duUV, v: dvUV },
-        uvBounds: {
-          minU: minX / canvas.width,
-          maxU: (maxX + 1) / canvas.width,
-          // canvas Y is “down”, UV V is “up”
-          minV: 1 - (maxY + 1) / canvas.height,
-          maxV: 1 - minY / canvas.height,
-        },
-        worldPos: hit.point.clone(),
+        flipU: flipSettings.flipU,
+        flipV: flipSettings.flipV,
+        seamBlend: seamBlendWeight,
       };
 
       const img = ctx.getImageData(minX, minY, w, h);
@@ -360,22 +365,28 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
             mask = 1 - (dist - brushHardness) / Math.max(1e-6, 1 - brushHardness);
           }
 
-          // Local offset in target UV space (U right, V up)
-          const duLocal = dxPx / canvas.width;
-          const dvLocal = -dyPx / canvas.height;
+          // Local offset in tangent space (convert canvas pixels to world units)
+          const duLocal = (dxPx / canvas.width) * (sourceImageSize.width / pixelsPerUnit);
+          const dvLocal = (-dyPx / canvas.height) * (sourceImageSize.height / pixelsPerUnit);
 
-          // Apply brush rotation to the sampled patch too
-          const duLocalRot = cosA * duLocal - sinA * dvLocal;
-          const dvLocalRot = sinA * duLocal + cosA * dvLocal;
+          // Apply flip to local offset too
+          const duLocalFlipped = flipSettings.flipU ? -duLocal : duLocal;
+          const dvLocalFlipped = flipSettings.flipV ? -dvLocal : dvLocal;
 
-          // Convert local UV offset -> source pixels (+ scale)
-          const srcX = sourceCenter.x + (duLocalRot * srcW) / brushScale;
-          const srcY = sourceCenter.y + (-dvLocalRot * srcH) / brushScale;
+          // Apply brush rotation
+          const duLocalRot = cosA * duLocalFlipped - sinA * dvLocalFlipped;
+          const dvLocalRot = sinA * duLocalFlipped + cosA * dvLocalFlipped;
+
+          // Convert to source pixels
+          const srcX = sourceCenter.x + (duLocalRot * pixelsPerUnit) / brushScale;
+          const srcY = sourceCenter.y + (-dvLocalRot * pixelsPerUnit) / brushScale;
 
           const src = sampleSourceColor(srcX, srcY);
           if (!src) continue;
 
-          const srcA = (src[3] / 255) * brushOpacity * mask;
+          // Apply seam blending - reduce opacity near seams for smoother transitions
+          const seamMultiplier = seamBlendWeight > 0 ? (1 - seamBlendWeight * 0.5) : 1;
+          const srcA = (src[3] / 255) * brushOpacity * mask * seamMultiplier;
           if (srcA <= 0) continue;
 
           const idx = (yy * w + xx) * 4;
@@ -384,7 +395,7 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
           const dstB = data[idx + 2];
           const dstA = data[idx + 3] / 255;
 
-          // Normal alpha compositing (into an opaque canvas)
+          // Normal alpha compositing
           const outA = srcA + dstA * (1 - srcA);
           const outR = (src[0] * srcA + dstR * dstA * (1 - srcA)) / Math.max(1e-6, outA);
           const outG = (src[1] * srcA + dstG * dstA * (1 - srcA)) / Math.max(1e-6, outA);
@@ -393,26 +404,27 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
           data[idx] = Math.round(outR);
           data[idx + 1] = Math.round(outG);
           data[idx + 2] = Math.round(outB);
-          data[idx + 3] = 255; // keep fully opaque so the mesh never “disappears”
+          data[idx + 3] = Math.round(outA * 255);
           paintedCount++;
         }
       }
 
       ctx.putImageData(img, minX, minY);
-      paintState.texture.needsUpdate = true;
-
-      console.log('CloneStamp: Dab painted', paintedCount, 'pixels, UV:', hit.uv.x.toFixed(3), hit.uv.y.toFixed(3), 'sourceCenter:', sourceCenter.x.toFixed(1), sourceCenter.y.toFixed(1));
+      texture.needsUpdate = true;
     },
     [
       sourceAnchor,
       sourceImageSize,
-      ensureMeshPaintState,
+      ensurePaintLayer,
+      getFlipSettings,
       brushRadius,
       brushScale,
       brushRotation,
       brushHardness,
       brushOpacity,
       sampleSourceColor,
+      textureSettings,
+      surfaceSettings.seamBlendRadius,
     ]
   );
 
@@ -449,7 +461,6 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
         if (!obj?.isMesh || !h.uv || !h.face) return false;
         if (!(obj.geometry as THREE.BufferGeometry)?.attributes?.uv) return false;
 
-        // Prefer front-faces so we don't “paint the inside” / opposite wall.
         const mesh = obj as THREE.Mesh;
         const worldNormal = (h.face as any).normal.clone();
         const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
@@ -457,41 +468,37 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
         return worldNormal.dot(rayDir) < 0;
       });
 
-
       if (!hit || !hit.uv || !hit.face) return;
 
       const mesh = hit.object as THREE.Mesh;
 
-      // Lock stroke to the root that contains this mesh, so it can paint across submeshes/faces
+      // Lock stroke to the root that contains this mesh
       const containingRoot = paintableRoots.find((r) => isDescendant(r, mesh));
       activeStrokeRootRef.current = containingRoot ?? mesh;
 
-      // World normal
+      // Compute world normal
       const worldNormal = hit.face.normal.clone();
       const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
       worldNormal.applyMatrix3(normalMatrix).normalize();
 
-      // Tangent frame derived from triangle UVs (stable per-face orientation)
-      const { tangent, bitangent } = computeTriangleTangentFrame(mesh, hit.face, worldNormal);
+      // Compute tangent frame at stroke start - this becomes the reference for the entire stroke
+      const { tangent, bitangent } = computeUVTangentFrame(mesh, hit.face, worldNormal);
+      
+      // Auto-detect flip on first contact with mesh
+      autoDetectFlip(mesh.uuid, tangent, bitangent, worldNormal);
 
-      const newAnchor = {
-        position: hit.point.clone(),
-        normal: worldNormal,
-        tangent,
-        bitangent,
-        uv: hit.uv.clone(),
-      };
-
-      setTargetAnchor3D(newAnchor);
+      // Store anchor for tangent-frame based painting
+      anchorPointRef.current = hit.point.clone();
+      anchorTangentRef.current = tangent.clone();
+      anchorBitangentRef.current = bitangent.clone();
+      anchorNormalRef.current = worldNormal.clone();
 
       beginStroke();
-      // Pass the anchor directly since store may not have updated yet
-      paintDab(hit as any, newAnchor);
+      paintDab(hit as any);
       setLastDabPosition(hit.point.clone());
-      lastHitUVRef.current = hit.uv.clone();
+      lastDabWorldPosRef.current = hit.point.clone();
 
-
-      console.log('CloneStamp: Stroke start', mesh.name || mesh.uuid);
+      console.log('CloneStamp: Stroke start (tangent-frame mode)', mesh.name || mesh.uuid);
     };
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -500,58 +507,60 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const root = activeStrokeRootRef.current;
       if (!root) return;
 
-       const hits = raycast(e, [root]);
-       const rayDir = raycasterRef.current.ray.direction;
-       const hit = hits.find((h) => {
-         const obj = h.object as any;
-         if (!obj?.isMesh || !h.uv || !h.face) return false;
-         if (!(obj.geometry as THREE.BufferGeometry)?.attributes?.uv) return false;
+      const hits = raycast(e, [root]);
+      const rayDir = raycasterRef.current.ray.direction;
+      const hit = hits.find((h) => {
+        const obj = h.object as any;
+        if (!obj?.isMesh || !h.uv || !h.face) return false;
+        if (!(obj.geometry as THREE.BufferGeometry)?.attributes?.uv) return false;
 
-         const mesh = obj as THREE.Mesh;
-         const worldNormal = (h.face as any).normal.clone();
-         const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
-         worldNormal.applyMatrix3(normalMatrix).normalize();
-         return worldNormal.dot(rayDir) < 0;
-       });
-
+        const mesh = obj as THREE.Mesh;
+        const worldNormal = (h.face as any).normal.clone();
+        const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+        worldNormal.applyMatrix3(normalMatrix).normalize();
+        return worldNormal.dot(rayDir) < 0;
+      });
 
       if (!hit || !hit.uv || !hit.face) return;
 
-       // Convert brush pixel radius -> world radius for spacing
-       const brushRadiusWorld = brushRadius * textureSettings.worldScale * brushScale;
-       const spacingDistance = Math.max(1e-6, brushRadiusWorld * (brushSpacing / 100));
+      // Brush spacing in world units
+      const brushRadiusWorld = brushRadius * textureSettings.worldScale * brushScale;
+      const spacingDistance = Math.max(1e-6, brushRadiusWorld * (brushSpacing / 100));
 
-       // If we move far in a single mouse event, fill the gap with evenly-spaced dabs
-       if (!lastDabPosition || !lastHitUVRef.current) {
-         paintDab(hit as any, targetAnchor3D);
-         setLastDabPosition(hit.point.clone());
-         lastHitUVRef.current = hit.uv.clone();
-         return;
-       }
+      if (!lastDabWorldPosRef.current) {
+        paintDab(hit as any);
+        setLastDabPosition(hit.point.clone());
+        lastDabWorldPosRef.current = hit.point.clone();
+        return;
+      }
 
-       const dist = hit.point.distanceTo(lastDabPosition);
-       if (dist < spacingDistance) return;
+      const dist = hit.point.distanceTo(lastDabWorldPosRef.current);
+      if (dist < spacingDistance) return;
 
-       const steps = Math.max(1, Math.floor(dist / spacingDistance));
-       for (let i = 1; i <= steps; i++) {
-         const t = i / steps;
-         const p = lastDabPosition.clone().lerp(hit.point, t);
-         const uv = lastHitUVRef.current.clone().lerp(hit.uv, t);
-         paintDab({ ...(hit as any), point: p, uv } as any, targetAnchor3D);
-       }
+      // Interpolate dabs for smooth stroke
+      const steps = Math.max(1, Math.floor(dist / spacingDistance));
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const p = lastDabWorldPosRef.current.clone().lerp(hit.point, t);
+        const uv = (lastDabPosition ? new THREE.Vector2(hit.uv.x, hit.uv.y) : hit.uv).clone();
+        
+        paintDab({ ...hit, point: p, uv } as any);
+      }
 
-       setLastDabPosition(hit.point.clone());
-       lastHitUVRef.current = hit.uv.clone();
-
+      setLastDabPosition(hit.point.clone());
+      lastDabWorldPosRef.current = hit.point.clone();
     };
 
-     const handleMouseUp = () => {
-       if (!isStroking) return;
-       activeStrokeRootRef.current = null;
-       lastHitUVRef.current = null;
-       endStroke();
-     };
-
+    const handleMouseUp = () => {
+      if (!isStroking) return;
+      activeStrokeRootRef.current = null;
+      anchorPointRef.current = null;
+      anchorTangentRef.current = null;
+      anchorBitangentRef.current = null;
+      anchorNormalRef.current = null;
+      lastDabWorldPosRef.current = null;
+      endStroke();
+    };
 
     gl.domElement.addEventListener('mousedown', handleMouseDown);
     gl.domElement.addEventListener('mousemove', handleMouseMove);
@@ -570,13 +579,13 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
     paintTargets,
     sourceAnchor,
     isStroking,
+    lastDabPosition,
     raycast,
     beginStroke,
     endStroke,
-    setTargetAnchor3D,
     paintDab,
     setLastDabPosition,
-    lastDabPosition,
+    autoDetectFlip,
     brushRadius,
     brushSpacing,
     brushScale,
@@ -587,9 +596,9 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
   return null;
 }
 
-// Debug overlay component showing clone stamp state
+// Debug overlay component showing tangent-frame state
 function CloneStampDebugOverlay() {
-  const { isStroking, sourceAnchor, targetAnchor3D, sourceImageSize } = useCloneStampStore();
+  const { isStroking, sourceAnchor, sourceImageSize } = useCloneStampStore();
   const [displayInfo, setDisplayInfo] = useState<DebugInfo | null>(null);
 
   useFrame(() => {
@@ -604,24 +613,26 @@ function CloneStampDebugOverlay() {
 
   return (
     <Html
-      position={[displayInfo.worldPos.x, displayInfo.worldPos.y + 0.5, displayInfo.worldPos.z]}
+      position={[displayInfo.hitPoint.x, displayInfo.hitPoint.y + 0.5, displayInfo.hitPoint.z]}
       style={{ pointerEvents: 'none' }}
     >
-      <div className="bg-background/85 text-foreground text-xs p-2 rounded border border-border font-mono whitespace-nowrap">
-        <div>hit.uv: ({displayInfo.hitUV.x.toFixed(3)}, {displayInfo.hitUV.y.toFixed(3)})</div>
-        <div>anchor.uv: ({displayInfo.targetAnchorUV.x.toFixed(3)}, {displayInfo.targetAnchorUV.y.toFixed(3)})</div>
-        <div>Δuv: ({displayInfo.uvDelta.u.toFixed(3)}, {displayInfo.uvDelta.v.toFixed(3)})</div>
-        <div>dab UV bounds:</div>
-        <div>
-          u[{displayInfo.uvBounds.minU.toFixed(3)}, {displayInfo.uvBounds.maxU.toFixed(3)}] v[{displayInfo.uvBounds.minV.toFixed(3)}, {displayInfo.uvBounds.maxV.toFixed(3)}]
-        </div>
+      <div className="bg-background/90 text-foreground text-xs p-2 rounded border border-border font-mono whitespace-nowrap">
+        <div className="text-green-400 font-bold mb-1">Tangent Frame Mode</div>
+        <div>T: ({displayInfo.tangent.x.toFixed(2)}, {displayInfo.tangent.y.toFixed(2)}, {displayInfo.tangent.z.toFixed(2)})</div>
+        <div>B: ({displayInfo.bitangent.x.toFixed(2)}, {displayInfo.bitangent.y.toFixed(2)}, {displayInfo.bitangent.z.toFixed(2)})</div>
+        <div>Δtangent: ({displayInfo.tangentDelta.u.toFixed(3)}, {displayInfo.tangentDelta.v.toFixed(3)})</div>
         <div className="text-primary">srcCenter: ({displayInfo.sourceCenter.x.toFixed(1)}, {displayInfo.sourceCenter.y.toFixed(1)})</div>
+        <div className="text-yellow-400">
+          Flip: U={displayInfo.flipU ? 'Y' : 'N'} V={displayInfo.flipV ? 'Y' : 'N'}
+        </div>
+        {displayInfo.seamBlend > 0 && (
+          <div className="text-blue-400">Seam blend: {(displayInfo.seamBlend * 100).toFixed(0)}%</div>
+        )}
         {sourceAnchor && (
           <div className="text-muted-foreground">srcAnchor: ({sourceAnchor.x.toFixed(1)}, {sourceAnchor.y.toFixed(1)})</div>
         )}
         {sourceImageSize && <div className="text-muted-foreground">srcSize: {sourceImageSize.width}×{sourceImageSize.height}</div>}
       </div>
-
     </Html>
   );
 }
