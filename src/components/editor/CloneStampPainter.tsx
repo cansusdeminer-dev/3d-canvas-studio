@@ -80,40 +80,56 @@ function computeUVTangentFrame(mesh: THREE.Mesh, face: THREE.Face, worldNormal: 
   const geom = mesh.geometry as THREE.BufferGeometry;
   const posAttr = geom.attributes.position as THREE.BufferAttribute | undefined;
   const uvAttr = geom.attributes.uv as THREE.BufferAttribute | undefined;
-  
+
   if (!posAttr || !uvAttr) {
     return computeGeometricTangentFrame(mesh, face, worldNormal);
   }
-  
-  const getPos = (i: number) => new THREE.Vector3(
-    posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)
-  ).applyMatrix4(mesh.matrixWorld);
-  
+
+  const getPos = (i: number) =>
+    new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(mesh.matrixWorld);
+
   const getUV = (i: number) => new THREE.Vector2(uvAttr.getX(i), uvAttr.getY(i));
-  
+
   const p0 = getPos(face.a);
   const p1 = getPos(face.b);
   const p2 = getPos(face.c);
-  
+
   const uv0 = getUV(face.a);
   const uv1 = getUV(face.b);
   const uv2 = getUV(face.c);
-  
+
   const dp1 = p1.clone().sub(p0);
   const dp2 = p2.clone().sub(p0);
   const duv1 = uv1.clone().sub(uv0);
   const duv2 = uv2.clone().sub(uv0);
-  
+
   const denom = duv1.x * duv2.y - duv1.y * duv2.x;
   if (Math.abs(denom) < 1e-8) {
     return computeGeometricTangentFrame(mesh, face, worldNormal);
   }
-  
+
   const r = 1 / denom;
-  const tangent = dp1.clone().multiplyScalar(duv2.y).sub(dp2.clone().multiplyScalar(duv1.y)).multiplyScalar(r);
+
+  // dP/du
+  const tangent = dp1
+    .clone()
+    .multiplyScalar(duv2.y)
+    .sub(dp2.clone().multiplyScalar(duv1.y))
+    .multiplyScalar(r);
   tangent.sub(worldNormal.clone().multiplyScalar(worldNormal.dot(tangent))).normalize();
+
+  // dP/dv (used to get the *correct* V sign / handedness)
+  const bitangentUV = dp2
+    .clone()
+    .multiplyScalar(duv1.x)
+    .sub(dp1.clone().multiplyScalar(duv2.x))
+    .multiplyScalar(r);
+  bitangentUV.sub(worldNormal.clone().multiplyScalar(worldNormal.dot(bitangentUV))).normalize();
+
+  // Orthonormalize bitangent but preserve UV-derived direction
   const bitangent = new THREE.Vector3().crossVectors(worldNormal, tangent).normalize();
-  
+  if (bitangent.dot(bitangentUV) < 0) bitangent.negate();
+
   return { tangent, bitangent };
 }
 
