@@ -146,8 +146,7 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
   
   const activeStrokeRootRef = useRef<THREE.Object3D | null>(null);
   const lastDabWorldPosRef = useRef<THREE.Vector3 | null>(null);
-  
-  // Source image data
+  const lastDabUvRef = useRef<THREE.Vector2 | null>(null);
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const sourceCtxRef = useRef<CanvasRenderingContext2D | null>(null);
   const sourceImageDataRef = useRef<ImageData | null>(null);
@@ -321,7 +320,8 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       
       const sourceCenter = {
         x: sourceAnchor.x + (duRot * pixelsPerUnit) / brushScale,
-        y: sourceAnchor.y + (-dvRot * pixelsPerUnit) / brushScale, // Y flipped for image coords
+        // IMPORTANT: treat +dv as +imageY (down). This keeps source motion aligned with cursor motion.
+        y: sourceAnchor.y + (dvRot * pixelsPerUnit) / brushScale,
       };
 
       // Map brush radius to target texture pixels
@@ -513,8 +513,7 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       paintDab(hit as any);
       setLastDabPosition(hit.point.clone());
       lastDabWorldPosRef.current = hit.point.clone();
-
-      console.log('CloneStamp: Stroke start (tangent-frame mode)', mesh.name || mesh.uuid);
+      lastDabUvRef.current = hit.uv.clone();
     };
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -543,28 +542,35 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       const brushRadiusWorld = brushRadius * textureSettings.worldScale * brushScale;
       const spacingDistance = Math.max(1e-6, brushRadiusWorld * (brushSpacing / 100));
 
-      if (!lastDabWorldPosRef.current) {
+      if (!lastDabWorldPosRef.current || !lastDabUvRef.current) {
         paintDab(hit as any);
         setLastDabPosition(hit.point.clone());
         lastDabWorldPosRef.current = hit.point.clone();
+        lastDabUvRef.current = hit.uv.clone();
         return;
       }
 
       const dist = hit.point.distanceTo(lastDabWorldPosRef.current);
       if (dist < spacingDistance) return;
 
-      // Interpolate dabs for smooth stroke
-      const steps = Math.max(1, Math.floor(dist / spacingDistance));
+      // Interpolate dabs for smooth stroke.
+      // IMPORTANT: we must interpolate UV too, otherwise we keep stamping the same UV and then "jump".
+      const rawSteps = Math.max(1, Math.floor(dist / spacingDistance));
+      const steps = Math.min(12, rawSteps);
+
+      const startPos = lastDabWorldPosRef.current.clone();
+      const startUv = lastDabUvRef.current.clone();
+
       for (let i = 1; i <= steps; i++) {
         const t = i / steps;
-        const p = lastDabWorldPosRef.current.clone().lerp(hit.point, t);
-        const uv = (lastDabPosition ? new THREE.Vector2(hit.uv.x, hit.uv.y) : hit.uv).clone();
-        
+        const p = startPos.clone().lerp(hit.point, t);
+        const uv = startUv.clone().lerp(hit.uv, t);
         paintDab({ ...hit, point: p, uv } as any);
       }
 
       setLastDabPosition(hit.point.clone());
       lastDabWorldPosRef.current = hit.point.clone();
+      lastDabUvRef.current = hit.uv.clone();
     };
 
     const handleMouseUp = () => {
@@ -575,6 +581,7 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       anchorBitangentRef.current = null;
       anchorNormalRef.current = null;
       lastDabWorldPosRef.current = null;
+      lastDabUvRef.current = null;
       endStroke();
     };
 
