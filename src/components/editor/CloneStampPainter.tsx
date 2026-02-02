@@ -110,7 +110,7 @@ function computeUVTangentFrame(mesh: THREE.Mesh, face: THREE.Face, worldNormal: 
 
   const r = 1 / denom;
 
-  // dP/du
+  // dP/du - tangent direction
   const tangent = dp1
     .clone()
     .multiplyScalar(duv2.y)
@@ -118,17 +118,10 @@ function computeUVTangentFrame(mesh: THREE.Mesh, face: THREE.Face, worldNormal: 
     .multiplyScalar(r);
   tangent.sub(worldNormal.clone().multiplyScalar(worldNormal.dot(tangent))).normalize();
 
-  // dP/dv (used to get the *correct* V sign / handedness)
-  const bitangentUV = dp2
-    .clone()
-    .multiplyScalar(duv1.x)
-    .sub(dp1.clone().multiplyScalar(duv2.x))
-    .multiplyScalar(r);
-  bitangentUV.sub(worldNormal.clone().multiplyScalar(worldNormal.dot(bitangentUV))).normalize();
-
-  // Orthonormalize bitangent but preserve UV-derived direction
+  // Use GEOMETRIC bitangent (cross product) - NOT UV-based
+  // This gives consistent behavior: bitangent is always perpendicular to normal and tangent
+  // The source mapping formula handles the Y-flip for image coordinates
   const bitangent = new THREE.Vector3().crossVectors(worldNormal, tangent).normalize();
-  if (bitangent.dot(bitangentUV) < 0) bitangent.negate();
 
   return { tangent, bitangent };
 }
@@ -319,13 +312,12 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       // textureSettings.worldScale is world units per pixel
       const pixelsPerUnit = textureSettings.worldScale > 0 ? 1 / textureSettings.worldScale : 1000;
       
-       // IMPORTANT: Canvas/source image coordinates are +Y downward.
-       // Keep the 3D tangent-frame mapping consistent with 2D clone math:
-       // moving the cursor “down” on the target should sample “down” in the source.
-       const sourceCenter = {
-         x: sourceAnchor.x + (duRot * pixelsPerUnit) / brushScale,
-         y: sourceAnchor.y + (dvRot * pixelsPerUnit) / brushScale,
-       };
+      // Image Y-axis is inverted (positive = down), so negate dv for correct mapping:
+      // Moving "up" on mesh -> geometric bitangent gives positive dv -> need negative to sample up
+      const sourceCenter = {
+        x: sourceAnchor.x + (duRot * pixelsPerUnit) / brushScale,
+        y: sourceAnchor.y - (dvRot * pixelsPerUnit) / brushScale,
+      };
 
       // Map brush radius to target texture pixels
       const radiusPx = Math.max(1, brushRadius * brushScale * (canvas.width / sourceImageSize.width));
@@ -384,10 +376,10 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
             mask = 1 - (dist - brushHardness) / Math.max(1e-6, 1 - brushHardness);
           }
 
-           // Local offset in tangent space (convert canvas pixels to world units)
-           // dyPx > 0 means “down” in canvas, so dvLocal should be positive.
-           const duLocal = (dxPx / canvas.width) * (sourceImageSize.width / pixelsPerUnit);
-           const dvLocal = (dyPx / canvas.height) * (sourceImageSize.height / pixelsPerUnit);
+          // Local offset in tangent space (convert canvas pixels to world units)
+          // Negate dyPx: canvas Y grows down, V should grow up for consistent mapping
+          const duLocal = (dxPx / canvas.width) * (sourceImageSize.width / pixelsPerUnit);
+          const dvLocal = (-dyPx / canvas.height) * (sourceImageSize.height / pixelsPerUnit);
 
           // Apply flip to local offset too
           const duLocalFlipped = flipSettings.flipU ? -duLocal : duLocal;
@@ -397,9 +389,9 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
           const duLocalRot = cosA * duLocalFlipped - sinA * dvLocalFlipped;
           const dvLocalRot = sinA * duLocalFlipped + cosA * dvLocalFlipped;
 
-          // Convert to source pixels
-           const srcX = sourceCenter.x + (duLocalRot * pixelsPerUnit) / brushScale;
-           const srcY = sourceCenter.y + (dvLocalRot * pixelsPerUnit) / brushScale;
+          // Convert to source pixels (negate V for image Y-axis)
+          const srcX = sourceCenter.x + (duLocalRot * pixelsPerUnit) / brushScale;
+          const srcY = sourceCenter.y - (dvLocalRot * pixelsPerUnit) / brushScale;
 
           const src = sampleSourceColor(srcX, srcY);
           if (!src) continue;

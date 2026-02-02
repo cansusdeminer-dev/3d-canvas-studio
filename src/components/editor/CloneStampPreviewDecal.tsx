@@ -176,15 +176,8 @@ export function CloneStampPreviewDecal() {
       .multiplyScalar(r);
     tangent.sub(worldNormal.clone().multiplyScalar(worldNormal.dot(tangent))).normalize();
 
-    const bitangentUV = dp2
-      .clone()
-      .multiplyScalar(duv1.x)
-      .sub(dp1.clone().multiplyScalar(duv2.x))
-      .multiplyScalar(r);
-    bitangentUV.sub(worldNormal.clone().multiplyScalar(worldNormal.dot(bitangentUV))).normalize();
-
+    // Use GEOMETRIC bitangent - consistent with CloneStampPainter
     const bitangent = new THREE.Vector3().crossVectors(worldNormal, tangent).normalize();
-    if (bitangent.dot(bitangentUV) < 0) bitangent.negate();
 
     return { tangent, bitangent };
   };
