@@ -319,10 +319,13 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
       // textureSettings.worldScale is world units per pixel
       const pixelsPerUnit = textureSettings.worldScale > 0 ? 1 / textureSettings.worldScale : 1000;
       
-      const sourceCenter = {
-        x: sourceAnchor.x + (duRot * pixelsPerUnit) / brushScale,
-        y: sourceAnchor.y + (-dvRot * pixelsPerUnit) / brushScale, // Y flipped for image coords
-      };
+       // IMPORTANT: Canvas/source image coordinates are +Y downward.
+       // Keep the 3D tangent-frame mapping consistent with 2D clone math:
+       // moving the cursor “down” on the target should sample “down” in the source.
+       const sourceCenter = {
+         x: sourceAnchor.x + (duRot * pixelsPerUnit) / brushScale,
+         y: sourceAnchor.y + (dvRot * pixelsPerUnit) / brushScale,
+       };
 
       // Map brush radius to target texture pixels
       const radiusPx = Math.max(1, brushRadius * brushScale * (canvas.width / sourceImageSize.width));
@@ -381,9 +384,10 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
             mask = 1 - (dist - brushHardness) / Math.max(1e-6, 1 - brushHardness);
           }
 
-          // Local offset in tangent space (convert canvas pixels to world units)
-          const duLocal = (dxPx / canvas.width) * (sourceImageSize.width / pixelsPerUnit);
-          const dvLocal = (-dyPx / canvas.height) * (sourceImageSize.height / pixelsPerUnit);
+           // Local offset in tangent space (convert canvas pixels to world units)
+           // dyPx > 0 means “down” in canvas, so dvLocal should be positive.
+           const duLocal = (dxPx / canvas.width) * (sourceImageSize.width / pixelsPerUnit);
+           const dvLocal = (dyPx / canvas.height) * (sourceImageSize.height / pixelsPerUnit);
 
           // Apply flip to local offset too
           const duLocalFlipped = flipSettings.flipU ? -duLocal : duLocal;
@@ -394,8 +398,8 @@ export function CloneStampPainter({ paintTargets }: CloneStampPainterProps) {
           const dvLocalRot = sinA * duLocalFlipped + cosA * dvLocalFlipped;
 
           // Convert to source pixels
-          const srcX = sourceCenter.x + (duLocalRot * pixelsPerUnit) / brushScale;
-          const srcY = sourceCenter.y + (-dvLocalRot * pixelsPerUnit) / brushScale;
+           const srcX = sourceCenter.x + (duLocalRot * pixelsPerUnit) / brushScale;
+           const srcY = sourceCenter.y + (dvLocalRot * pixelsPerUnit) / brushScale;
 
           const src = sampleSourceColor(srcX, srcY);
           if (!src) continue;
